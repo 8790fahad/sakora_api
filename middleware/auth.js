@@ -1,9 +1,10 @@
 const jwt = require("jsonwebtoken");
 const db = require("../models");
+const { hasPermission } = require("../utils/permissions");
 
 // JWT Secret - use environment variable or fallback for development
 const JWT_SECRET =
-  process.env.JWT_SECRET || "inventria-dev-secret-key-change-in-production";
+  process.env.JWT_SECRET || "sakora-dev-secret-key-change-in-production";
 
 // Verify JWT token and set user in request
 const authenticate = async (req, res, next) => {
@@ -107,6 +108,26 @@ const authorize = (roles = []) => {
   };
 };
 
+const requirePermission = (permission) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required.",
+      });
+    }
+
+    if (!hasPermission(req.user, permission)) {
+      return res.status(403).json({
+        success: false,
+        message: "You do not have permission to perform this action.",
+      });
+    }
+
+    next();
+  };
+};
+
 // Optional authentication (doesn't fail if no token)
 const optionalAuth = async (req, res, next) => {
   const authHeader = req.header("Authorization");
@@ -141,5 +162,6 @@ const optionalAuth = async (req, res, next) => {
 module.exports = {
   authenticate,
   authorize,
+  requirePermission,
   optionalAuth,
 };

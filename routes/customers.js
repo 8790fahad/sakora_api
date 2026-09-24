@@ -204,11 +204,15 @@ router.post(
     body("email").optional().trim().isEmail().withMessage("Please provide a valid email address"),
     body("address").optional().trim(),
     body("notes").optional().trim(),
+    body("tin").optional().trim().isLength({ max: 50 }),
+    body("customerType")
+      .optional()
+      .isIn(["individual", "company", "government"]),
     handleValidationErrors,
   ],
   async (req, res) => {
     try {
-      const { name, phone, email, address, notes } = req.body;
+      const { name, phone, email, address, notes, tin, customerType } = req.body;
 
       // Check for duplicate phone or email
       if (phone || email) {
@@ -242,6 +246,8 @@ router.post(
         email,
         address,
         notes,
+        tin: tin || null,
+        customerType: customerType || "individual",
       });
 
       res.status(201).json(
@@ -268,6 +274,10 @@ router.put(
     body("email").optional().trim().isEmail(),
     body("address").optional().trim(),
     body("notes").optional().trim(),
+    body("tin").optional().trim().isLength({ max: 50 }),
+    body("customerType")
+      .optional()
+      .isIn(["individual", "company", "government"]),
     handleValidationErrors,
   ],
   async (req, res) => {

@@ -186,6 +186,8 @@ router.post(
         tags = [],
         attributes = {},
         openingStock = 0,
+        isOnline = true,
+        isFeatured = false,
       } = req.body;
 
       // Check if SKU already exists
@@ -249,6 +251,8 @@ router.post(
           image,
           tags,
           attributes,
+          isOnline,
+          isFeatured,
         },
         { transaction }
       );

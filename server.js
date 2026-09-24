@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 5100;
 
 // Import database
 const db = require("./models");
+const { ensureSchema } = require("./utils/ensureSchema");
 
 // Middleware
 app.use(helmet());
@@ -26,7 +27,14 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({
+  limit: "10mb",
+  verify: (req, res, buf) => {
+    if (req.originalUrl === "/api/payments/webhook") {
+      req.rawBody = buf;
+    }
+  },
+}));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Static file serving for uploads
@@ -46,12 +54,19 @@ app.use("/api/cash", require("./routes/cash"));
 app.use("/api/reports", require("./routes/reports"));
 app.use("/api/dashboard", require("./routes/dashboard"));
 app.use("/api/settings", require("./routes/settings"));
+app.use("/api/storefront", require("./routes/storefront"));
+app.use("/api/orders", require("./routes/orders"));
+app.use("/api/payments", require("./routes/payments"));
+app.use("/api/subscriptions", require("./routes/subscriptions"));
+app.use("/api/notifications", require("./routes/notifications"));
+app.use("/api/vat", require("./routes/vat"));
+app.use("/api/users", require("./routes/users"));
 
 // Health check endpoint
 app.get("/api/health", (req, res) => {
   res.json({
     status: "OK",
-    message: "Inventria Mobile API is running",
+    message: "sakora Mobile API is running",
     timestamp: new Date().toISOString(),
     version: "1.0.0",
   });
@@ -106,6 +121,8 @@ async function startServer() {
     await db.sequelize.authenticate();
     console.log("✅ Database connection established successfully.");
 
+    await ensureSchema(db.sequelize);
+
     // Sync database (creates tables if they don't exist)
     // Note: Using sync() without alter to avoid duplicate index issues
     // For schema changes, use migrations or manually alter tables
@@ -115,7 +132,7 @@ async function startServer() {
 
     // Start server
     app.listen(PORT, () => {
-      console.log(`🚀 Inventria Mobile API server running on port ${PORT}`);
+      console.log(`🚀 sakora Mobile API server running on port ${PORT}`);
       console.log(`📱 Environment: ${process.env.NODE_ENV || "development"}`);
       console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
     });

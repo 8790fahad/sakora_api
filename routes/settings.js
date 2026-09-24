@@ -27,6 +27,7 @@ router.get("/", authenticate, async (req, res) => {
         "taxEnabled",
         "taxRate",
         "taxName",
+        "taxTin",
         "settings",
       ],
     });
@@ -45,8 +46,9 @@ router.get("/", authenticate, async (req, res) => {
       business: {
         currency: "NGN",
         taxEnabled: false,
-        taxRate: 0,
+        taxRate: 7.5,
         taxName: "VAT",
+        taxTin: "",
         unitsOfMeasure: ["pcs", "kg", "liters", "meters", "boxes", "cartons"],
         receiptSettings: {
           includeBusinessInfo: true,
@@ -92,8 +94,12 @@ router.get("/", authenticate, async (req, res) => {
         ...businessSettings,
         currency: business.currency || defaultSettings.business.currency,
         taxEnabled: business.taxEnabled || defaultSettings.business.taxEnabled,
-        taxRate: business.taxRate || defaultSettings.business.taxRate,
+        taxRate:
+          business.taxRate !== null && business.taxRate !== undefined
+            ? parseFloat(business.taxRate)
+            : defaultSettings.business.taxRate,
         taxName: business.taxName || defaultSettings.business.taxName,
+        taxTin: business.taxTin || defaultSettings.business.taxTin,
       },
       notifications: {
         ...defaultSettings.notifications,
@@ -128,6 +134,7 @@ router.put(
     body("taxEnabled").optional().isBoolean(),
     body("taxRate").optional().isFloat({ min: 0, max: 100 }),
     body("taxName").optional().isLength({ min: 1, max: 50 }),
+    body("taxTin").optional().trim().isLength({ max: 50 }),
     body("settings").optional().isObject(),
     handleValidationErrors,
   ],
@@ -138,6 +145,7 @@ router.put(
         taxEnabled,
         taxRate,
         taxName,
+        taxTin,
         settings: additionalSettings,
       } = req.body;
 
@@ -152,6 +160,7 @@ router.put(
       if (taxEnabled !== undefined) updateData.taxEnabled = taxEnabled;
       if (taxRate !== undefined) updateData.taxRate = taxRate;
       if (taxName !== undefined) updateData.taxName = taxName;
+      if (taxTin !== undefined) updateData.taxTin = taxTin;
 
       // Update additional settings
       if (additionalSettings) {

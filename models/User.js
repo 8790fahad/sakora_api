@@ -64,6 +64,24 @@ module.exports = (sequelize, DataTypes) => {
     phoneVerified: {
       type: DataTypes.BOOLEAN,
       defaultValue: false
+    },
+    permissions: {
+      type: DataTypes.JSON,
+      allowNull: true
+    },
+    preferences: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      get() {
+        const raw = this.getDataValue('preferences');
+        if (!raw) return {};
+        if (typeof raw === 'object') return raw;
+        try {
+          return JSON.parse(raw);
+        } catch (error) {
+          return {};
+        }
+      }
     }
   }, {
     hooks: {
@@ -117,6 +135,11 @@ module.exports = (sequelize, DataTypes) => {
     User.hasMany(models.UserSession, {
       foreignKey: 'userId',
       as: 'sessions'
+    });
+
+    User.hasMany(models.Notification, {
+      foreignKey: 'userId',
+      as: 'notifications'
     });
   };
 

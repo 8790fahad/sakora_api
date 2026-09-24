@@ -125,6 +125,41 @@ module.exports = (sequelize, DataTypes) => {
         dateFormat: 'DD/MM/YYYY',
         timeFormat: '12h'
       }
+    },
+    taxName: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    taxTin: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    storefrontSlug: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      unique: true
+    },
+    storefrontEnabled: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
+    storefrontSettings: {
+      type: DataTypes.JSON,
+      defaultValue: {
+        tagline: 'Shop with us online',
+        shippingFee: 0,
+        allowNotes: true
+      },
+      get() {
+        const raw = this.getDataValue('storefrontSettings');
+        if (!raw) return {};
+        if (typeof raw === 'object') return raw;
+        try {
+          return JSON.parse(raw);
+        } catch (error) {
+          return {};
+        }
+      }
     }
   });
 
@@ -169,6 +204,11 @@ module.exports = (sequelize, DataTypes) => {
     Business.hasMany(models.Supplier, {
       foreignKey: 'businessId',
       as: 'suppliers'
+    });
+
+    Business.hasMany(models.Order, {
+      foreignKey: 'businessId',
+      as: 'orders'
     });
   };
 

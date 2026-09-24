@@ -9,6 +9,8 @@ const {
   successResponse,
   getPagination,
   getPagingData,
+  generateBusinessNumber,
+  resolveTaxRate,
   updateCashBalance,
 } = require("../utils/helpers");
 const { authenticate, authorize } = require("../middleware/auth");
@@ -215,6 +217,7 @@ router.post(
     body("items.*.unitCost").isFloat({ min: 0 }),
     body("discount").optional().isFloat({ min: 0 }),
     body("tax").optional().isFloat({ min: 0 }),
+    body("taxRate").optional().isFloat({ min: 0, max: 100 }),
     body("notes").optional().trim(),
     handleValidationErrors,
   ],
@@ -232,6 +235,7 @@ router.post(
         items,
         discount = 0,
         tax = 0,
+        taxRate,
         notes,
       } = req.body;
 
@@ -248,36 +252,58 @@ router.post(
         finalSupplierId = newSupplier.id;
       }
 
-      // Calculate totals
       const subtotal = items.reduce(
         (sum, item) => sum + parseFloat(item.quantity) * parseFloat(item.unitCost),
         0
       );
-      const totalAmount = subtotal + parseFloat(tax) - parseFloat(discount);
-
-      // Generate reference if not provided
-      let purchaseReference = reference;
-      if (!purchaseReference) {
-        const count = await db.Purchase.count({
-          where: { businessId: req.user.businessId },
-        });
-        purchaseReference = `PUR-${String(count + 1).padStart(6, "0")}`;
+      const business = await db.Business.findByPk(req.user.businessId);
+      const appliedTaxRate = resolveTaxRate(business, taxRate);
+      let taxAmount = parseFloat(tax || 0);
+      if (!taxAmount && appliedTaxRate > 0) {
+        taxAmount = (subtotal * appliedTaxRate) / 100;
       }
+      const totalAmount = subtotal + taxAmount - parseFloat(discount);
 
-      // Create purchase
+      const count = await db.Purchase.count({
+        where: { businessId: req.user.businessId },
+      });
+      const purchaseNumber =
+        reference || generateBusinessNumber(req.user.businessId, "PUR", count + 1);
+
+      const methodMap = {
+        cash: "cash",
+        bank_transfer: "bank",
+        bank: "bank",
+        cheque: "cheque",
+        credit: "credit",
+        mobile: "mobile",
+        other: "other",
+      };
+      const statusMap = {
+        paid: "paid",
+        pending: "unpaid",
+        unpaid: "unpaid",
+        partial: "partial",
+        overdue: "unpaid",
+      };
+      const mappedMethod = methodMap[paymentMethod] || "cash";
+      const mappedStatus = statusMap[paymentStatus] || "unpaid";
+
       const purchase = await db.Purchase.create(
         {
           businessId: req.user.businessId,
           branchId: req.user.branchId,
           supplierId: finalSupplierId,
+          purchaseNumber,
           date: new Date(date),
-          reference: purchaseReference,
+          reference: purchaseNumber,
           subtotal,
-          discount: parseFloat(discount),
-          tax: parseFloat(tax),
-          totalAmount,
-          paymentMethod,
-          paymentStatus,
+          discountAmount: parseFloat(discount),
+          taxAmount,
+          total: totalAmount,
+          paidAmount: mappedStatus === "paid" ? totalAmount : 0,
+          paymentMethod: mappedMethod,
+          paymentStatus: mappedStatus,
           notes,
           createdBy: req.user.id,
         },
@@ -342,7 +368,7 @@ router.post(
       }
 
       // Create cash transaction if paid
-      if (paymentStatus === "paid" && paymentMethod !== "credit") {
+      if (mappedStatus === "paid" && mappedMethod !== "credit") {
         const runningBalance = await updateCashBalance(
           req.user.branchId,
           totalAmount,
@@ -356,13 +382,13 @@ router.post(
             branchId: req.user.branchId,
             type: "out",
             amount: totalAmount,
-            description: `Purchase - ${purchaseReference}${
+            description: `Purchase - ${purchaseNumber}${
               finalSupplierId ? "" : ` (${supplierName})`
             }`,
             referenceType: "purchase",
             referenceId: purchase.id,
-            referenceNumber: purchaseReference,
-            paymentMethod,
+            referenceNumber: purchaseNumber,
+            paymentMethod: mappedMethod,
             runningBalance,
             notes,
             createdBy: req.user.id,

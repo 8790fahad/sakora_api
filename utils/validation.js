@@ -40,7 +40,11 @@ const validationRules = {
     body('phone')
       .optional()
       .isMobilePhone()
-      .withMessage('Please provide a valid phone number')
+      .withMessage('Please provide a valid phone number'),
+    body('acceptTerms')
+      .custom((value) => value === true || value === 'true')
+      .withMessage('You must agree to the General Terms of Use, Merchant Terms of Use and General Privacy Policy'),
+    body('marketingOptIn').optional()
   ],
 
   // User login

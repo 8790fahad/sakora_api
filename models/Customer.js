@@ -56,7 +56,7 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: 0.00
     },
     customerType: {
-      type: DataTypes.ENUM('individual', 'business'),
+      type: DataTypes.ENUM('individual', 'company', 'government'),
       defaultValue: 'individual'
     },
     status: {

@@ -5,12 +5,14 @@ const { body } = require('express-validator');
 const { validationRules, handleValidationErrors } = require('../utils/validation');
 const { errorResponse, successResponse } = require('../utils/helpers');
 const { authenticate } = require('../middleware/auth');
+const { serializeUser } = require('../utils/permissions');
+const { uniqueSlug } = require('../utils/slug');
 const db = require('../models');
 
 const router = express.Router();
 
 // JWT Secret - use environment variable or fallback for development
-const JWT_SECRET = process.env.JWT_SECRET || 'inventria-dev-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET || 'sakora-dev-secret-key-change-in-production';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
 // Register new user and business
@@ -21,7 +23,16 @@ router.post('/register', [
   const transaction = await db.sequelize.transaction();
 
   try {
-    const { email, password, firstName, lastName, phone, businessName, businessType } = req.body;
+    const {
+      email,
+      password,
+      firstName,
+      lastName,
+      phone,
+      businessName,
+      businessType,
+      marketingOptIn,
+    } = req.body;
 
     // Check if user already exists
     const existingUser = await db.User.findOne({
@@ -35,11 +46,14 @@ router.post('/register', [
     }
 
     // Create business first
+    const businessNameValue = businessName || `${firstName}'s Business`;
     const business = await db.Business.create({
-      name: businessName || `${firstName}'s Business`,
+      name: businessNameValue,
       businessType: businessType || 'retail',
       currency: 'NGN',
-      currencySymbol: '₦'
+      currencySymbol: '₦',
+      storefrontSlug: await uniqueSlug(db, businessNameValue),
+      storefrontEnabled: true
     }, { transaction });
 
     // Create main branch
@@ -60,7 +74,13 @@ router.post('/register', [
       role: 'owner',
       businessId: business.id,
       branchId: branch.id,
-      status: 'active'
+      status: 'active',
+      preferences: {
+        acceptedTerms: true,
+        acceptedTermsAt: new Date().toISOString(),
+        termsVersion: '1.0',
+        marketingOptIn: marketingOptIn === true || marketingOptIn === 'true',
+      },
     }, { transaction });
 
     // Create default expense categories
@@ -138,16 +158,7 @@ router.post('/register', [
 
     res.status(201).json(successResponse('Registration successful', {
       token,
-      user: {
-        id: userWithAssociations.id,
-        email: userWithAssociations.email,
-        firstName: userWithAssociations.firstName,
-        lastName: userWithAssociations.lastName,
-        phone: userWithAssociations.phone,
-        role: userWithAssociations.role,
-        business: userWithAssociations.business,
-        branch: userWithAssociations.branch
-      }
+      user: serializeUser(userWithAssociations)
     }));
 
   } catch (error) {
@@ -227,13 +238,9 @@ router.post('/login', [
     // Update last login
     await user.update({ lastLogin: new Date() });
 
-    // Remove password from response
-    const userResponse = user.toJSON();
-    delete userResponse.password;
-
     res.json(successResponse('Login successful', {
       token,
-      user: userResponse
+      user: serializeUser(user)
     }));
 
   } catch (error) {
@@ -273,7 +280,7 @@ router.get('/profile', authenticate, async (req, res) => {
       return res.status(404).json(errorResponse('User not found'));
     }
 
-    res.json(successResponse('Profile retrieved', { user }));
+    res.json(successResponse('Profile retrieved', { user: serializeUser(user) }));
 
   } catch (error) {
     console.error('Profile error:', error);

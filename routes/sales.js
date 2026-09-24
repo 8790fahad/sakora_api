@@ -9,6 +9,7 @@ const {
   successResponse,
   generateBusinessNumber,
   calculateTransactionTotals,
+  resolveTaxRate,
   updateCashBalance,
   getPagination,
   getPagingData,
@@ -327,13 +328,15 @@ router.post(
         saleCount
       );
 
-      // Calculate totals
-      const totals = calculateTransactionTotals(items, taxRate);
+      const business = await db.Business.findByPk(req.user.businessId);
+      const appliedTaxRate = resolveTaxRate(business, taxRate);
+      const totals = calculateTransactionTotals(items, appliedTaxRate);
       const finalTotal = totals.total - parseFloat(discountAmount);
 
       // Create sale
       const sale = await db.Sale.create(
         {
+          businessId: req.user.businessId,
           branchId: req.user.branchId,
           customerId: customer?.id,
           createdBy: req.user.id,

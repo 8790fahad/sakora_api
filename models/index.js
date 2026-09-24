@@ -23,6 +23,13 @@ db.Customer = require('./Customer')(sequelize, Sequelize.DataTypes);
 db.Supplier = require('./Supplier')(sequelize, Sequelize.DataTypes);
 db.CashTransaction = require('./CashTransaction')(sequelize, Sequelize.DataTypes);
 db.UserSession = require('./UserSession')(sequelize, Sequelize.DataTypes);
+db.Order = require('./Order')(sequelize, Sequelize.DataTypes);
+db.OrderItem = require('./OrderItem')(sequelize, Sequelize.DataTypes);
+db.Payment = require('./Payment')(sequelize, Sequelize.DataTypes);
+db.Subscription = require('./Subscription')(sequelize, Sequelize.DataTypes);
+db.Notification = require('./Notification')(sequelize, Sequelize.DataTypes);
+db.MessageLog = require('./MessageLog')(sequelize, Sequelize.DataTypes);
+db.VatPayment = require('./VatPayment')(sequelize, Sequelize.DataTypes);
 
 // Define associations
 Object.keys(db).forEach(modelName => {

@@ -63,6 +63,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true
     },
+    supplierType: {
+      type: DataTypes.ENUM('individual', 'company', 'government'),
+      defaultValue: 'individual'
+    },
     paymentTerms: {
       type: DataTypes.STRING,
       allowNull: true

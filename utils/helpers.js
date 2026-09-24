@@ -82,6 +82,15 @@ const calculateTransactionTotals = (items, taxRate = 0) => {
   };
 };
 
+const resolveTaxRate = (business, requestedRate) => {
+  const requested = parseFloat(requestedRate);
+  if (business?.taxEnabled) {
+    if (!Number.isNaN(requested) && requested > 0) return requested;
+    return parseFloat(business.taxRate || 0);
+  }
+  return Number.isNaN(requested) ? 0 : requested;
+};
+
 // Update running cash balance
 const updateCashBalance = async (branchId, amount, type, db) => {
   try {
@@ -221,6 +230,7 @@ module.exports = {
   formatCurrency,
   calculateProfit,
   calculateTransactionTotals,
+  resolveTaxRate,
   updateCashBalance,
   getPagination,
   getPagingData,

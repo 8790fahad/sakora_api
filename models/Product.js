@@ -82,6 +82,14 @@ module.exports = (sequelize, DataTypes) => {
     attributes: {
       type: DataTypes.JSON,
       defaultValue: {}
+    },
+    isOnline: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true
+    },
+    isFeatured: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
     }
   });
 
@@ -114,6 +122,11 @@ module.exports = (sequelize, DataTypes) => {
     Product.hasMany(models.PurchaseItem, {
       foreignKey: 'productId',
       as: 'purchaseItems'
+    });
+
+    Product.hasMany(models.OrderItem, {
+      foreignKey: 'productId',
+      as: 'orderItems'
     });
   };
 

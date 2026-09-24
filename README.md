@@ -1,6 +1,6 @@
 # sakora_api
 
-Backend API for Inventria Mobile — inventory, sales, purchases, expenses, and business management.
+Backend API for sakora Mobile — inventory, sales, purchases, expenses, and business management.
 
 ## Setup
 
