@@ -26,10 +26,20 @@ jobs:
             cd /home/dev/sakora_api
             git pull --no-rebase origin main
             npm ci --omit=dev
-            if command -v pm2 >/dev/null 2>&1; then
-              pm2 restart sakora-api || pm2 start server.js --name sakora-api
-            elif [ -d tmp ]; then
-              touch tmp/restart.txt
+            PORT=$(awk -F= '/^PORT=/{print $2}' .env | tr -d ' \r' | tail -1)
+            PORT=${PORT:-5100}
+            if command -v pm2 >/dev/null 2>&1 && pm2 pid sakora-api 2>/dev/null | grep -Eq '^[1-9]'; then
+              pm2 restart sakora-api --update-env
             else
-              echo "Code updated. Restart the Node app from the host if it did not reload."
+              if command -v fuser >/dev/null 2>&1; then
+                fuser -k "${PORT}/tcp" || true
+                sleep 1
+              fi
+              if command -v pm2 >/dev/null 2>&1; then
+                pm2 start server.js --name sakora-api --cwd /home/dev/sakora_api --update-env
+              else
+                nohup node server.js >> /home/dev/sakora_api/server.log 2>&1 &
+              fi
             fi
+            mkdir -p tmp
+            touch tmp/restart.txt

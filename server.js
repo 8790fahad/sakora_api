@@ -38,19 +38,49 @@ if (process.env.FRONTEND_URL) {
   }
 }
 
+const allowedOrigins = new Set([
+  ...shopOrigins,
+  ...extraOrigins,
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost:5175",
+]);
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  }
+  if (req.method === "OPTIONS") {
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS"
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      req.headers["access-control-request-headers"] || "Content-Type, Authorization"
+    );
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(
   cors({
-    origin: [
-      ...new Set([
-        ...shopOrigins,
-        ...extraOrigins,
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-      ]),
-    ],
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.has(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
     credentials: true,
+    methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 app.use(express.json({
@@ -94,7 +124,7 @@ app.get("/api/health", (req, res) => {
     status: "OK",
     message: "sakora Mobile API is running",
     timestamp: new Date().toISOString(),
-    version: "1.0.0",
+    version: "1.0.1",
   });
 });
 
