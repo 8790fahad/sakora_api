@@ -1,6 +1,6 @@
 # Pulls main on the nexifour.ng server and restarts the API.
 # Repo secrets (Settings → Secrets and variables → Actions):
-#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, DEPLOY_PATH
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY
 # Optional: SSH_PORT (defaults to 22)
 name: Deploy Sakora API
 
@@ -22,7 +22,7 @@ jobs:
           port: ${{ secrets.SSH_PORT || 22 }}
           script: |
             set -e
-            cd "${{ secrets.DEPLOY_PATH }}"
+            cd /home/dev/aa_erp_api
             git pull origin main
             npm ci --omit=dev
             if command -v pm2 >/dev/null 2>&1; then
