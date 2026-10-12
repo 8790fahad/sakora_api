@@ -23,8 +23,8 @@ jobs:
           port: ${{ secrets.VPS_PORT }}
           script: |
             set -e
-            cd /home/dev/aa_erp_api
-            git pull origin main
+            cd /home/dev/sakora_api
+            git pull --no-rebase origin main
             npm ci --omit=dev
             if command -v pm2 >/dev/null 2>&1; then
               pm2 restart sakora-api || pm2 start server.js --name sakora-api
