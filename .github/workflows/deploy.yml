@@ -1,0 +1,34 @@
+# Pulls main on the nexifour.ng server and restarts the API.
+# Repo secrets (Settings → Secrets and variables → Actions):
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, DEPLOY_PATH
+# Optional: SSH_PORT (defaults to 22)
+name: Deploy Sakora API
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            cd "${{ secrets.DEPLOY_PATH }}"
+            git pull origin main
+            npm ci --omit=dev
+            if command -v pm2 >/dev/null 2>&1; then
+              pm2 restart sakora-api || pm2 start server.js --name sakora-api
+            elif [ -d tmp ]; then
+              touch tmp/restart.txt
+            else
+              echo "Code updated. Restart the Node app from the host if it did not reload."
+            fi
