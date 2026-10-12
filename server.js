@@ -13,17 +13,39 @@ const { ensureSchema } = require("./utils/ensureSchema");
 
 // Middleware
 app.use(helmet());
+const parseOrigins = (value) =>
+  (value || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+const shopOrigins = [
+  "https://sakora.shop",
+  "https://www.sakora.shop",
+  "https://nexifour.ng",
+  "https://www.nexifour.ng",
+];
+const extraOrigins = parseOrigins(process.env.CORS_ORIGIN);
+if (process.env.FRONTEND_URL) {
+  try {
+    extraOrigins.push(new URL(process.env.FRONTEND_URL).origin);
+  } catch (error) {
+    // ignore invalid FRONTEND_URL
+  }
+}
+
 app.use(
   cors({
-    origin:
-      process.env.NODE_ENV === "production"
-        ? ["https://yourdomain.com"]
-        : [
-            "http://localhost:3000",
-            "http://localhost:5173",
-            "http://localhost:5174",
-            "http://localhost:5175",
-          ],
+    origin: [
+      ...new Set([
+        ...shopOrigins,
+        ...extraOrigins,
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+      ]),
+    ],
     credentials: true,
   })
 );

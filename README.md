@@ -28,3 +28,7 @@ npm run dev
 | `DB_PASSWORD` | Database password |
 | `JWT_SECRET` | JWT signing secret |
 | `PORT` | API port (default: 5100) |
+| `FRONTEND_URL` | Shop/app URL for payment callbacks. Production: `https://sakora.shop` |
+| `CORS_ORIGIN` | Allowed browser origins. Production should include `https://sakora.shop` and `https://www.sakora.shop` |
+
+Production API: [https://nexifour.ng/sakora/api/health](https://nexifour.ng/sakora/api/health)
