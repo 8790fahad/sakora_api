@@ -37,4 +37,4 @@ Production API: [https://nexifour.ng/sakora/api/health](https://nexifour.ng/sako
 
 `.github/workflows/deploy.yml` runs on every push to `main`. It SSHs to the server, pulls, installs, and restarts the API.
 
-The app lives at `/home/dev/aa_erp_api`. Add these repository secrets before the first run: `VPS_HOST`, `VPS_USER`, `VPS_PORT`, and `SSH_PRIVATE_KEY`.
+The app lives at `/home/dev/aa_erp_api`. Add these repository secrets before the first run: `VPS_HOST`, `VPS_USER`, `VPS_PORT`, and `VPS_PASSWORD`.
