@@ -1,6 +1,7 @@
 # Pulls main on the nexifour.ng server and restarts the API.
 # Repo secrets (Settings → Secrets and variables → Actions):
 #   VPS_HOST, VPS_USER, VPS_PORT, VPS_PASSWORD
+
 name: Deploy Sakora API
 
 
