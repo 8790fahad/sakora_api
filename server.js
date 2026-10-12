@@ -12,7 +12,11 @@ const db = require("./models");
 const { ensureSchema } = require("./utils/ensureSchema");
 
 // Middleware
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 const parseOrigins = (value) =>
   (value || "")
     .split(",")
