@@ -12,6 +12,7 @@ const {
 } = require("../utils/helpers");
 const { authenticate, authorize } = require("../middleware/auth");
 const db = require("../models");
+const { pickAllowed } = require("../utils/tenant");
 
 const router = express.Router();
 
@@ -285,7 +286,16 @@ router.put(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const updates = req.body;
+      const updates = pickAllowed(req.body, [
+        "name",
+        "phone",
+        "email",
+        "address",
+        "notes",
+        "tin",
+        "supplierType",
+        "status",
+      ]);
 
       const supplier = await db.Supplier.findOne({
         where: {

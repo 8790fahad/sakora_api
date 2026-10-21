@@ -61,6 +61,27 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       defaultValue: false
     },
+    emailVerificationCode: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    emailVerificationExpires: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    googleId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      unique: true
+    },
+    passwordResetCode: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    passwordResetExpires: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
     phoneVerified: {
       type: DataTypes.BOOLEAN,
       defaultValue: false
@@ -93,12 +114,25 @@ module.exports = (sequelize, DataTypes) => {
       }
     },
     defaultScope: {
-      attributes: { exclude: ['password'] }
+      attributes: {
+        exclude: [
+          'password',
+          'emailVerificationCode',
+          'emailVerificationExpires',
+          'passwordResetCode',
+          'passwordResetExpires',
+        ],
+      },
     },
     scopes: {
       withPassword: {
         attributes: { include: ['password'] }
-      }
+      },
+      withEmailVerification: {
+        attributes: {
+          include: ['emailVerificationCode', 'emailVerificationExpires'],
+        },
+      },
     }
   });
 

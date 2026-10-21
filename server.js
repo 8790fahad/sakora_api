@@ -1,51 +1,112 @@
 require("dotenv").config();
+const cluster = require("cluster");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
+const compression = require("compression");
+const rateLimit = require("express-rate-limit");
 const path = require("path");
+
+const { getJwtSecret } = require("./config/secrets");
+const { getAllowedOrigins, isOriginAllowed } = require("./utils/origins");
+const { isRedisEnabled, getRedis, closeRedis, redisPing } = require("./config/redis");
+const { queueStats, closeQueue } = require("./queues/jobQueue");
+const { startNotifyWorkers, stopNotifyWorkers } = require("./workers/notifyWorker");
+
+// Fail fast on weak production secrets
+getJwtSecret();
 
 const app = express();
 const PORT = process.env.PORT || 5100;
+const SHUTDOWN_TIMEOUT_MS = Number(process.env.SHUTDOWN_TIMEOUT_MS || 15000);
 
 // Import database
 const db = require("./models");
 const { ensureSchema } = require("./utils/ensureSchema");
+const { attachLive, listenForStockRelay } = require("./utils/live");
 
 // Middleware
+app.set("trust proxy", 1);
+
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
   })
 );
-const parseOrigins = (value) =>
-  (value || "")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+app.use(compression());
 
-const shopOrigins = [
-  "https://sakora.shop",
-  "https://www.sakora.shop",
-  "https://nexifour.ng",
-  "https://www.nexifour.ng",
-];
-const extraOrigins = parseOrigins(process.env.CORS_ORIGIN);
-if (process.env.FRONTEND_URL) {
+const allowedOrigins = getAllowedOrigins();
+
+// Deferred limiters so Redis store can be attached before traffic starts
+let apiLimiter = (req, res, next) => next();
+let authLimiter = (req, res, next) => next();
+let newsletterLimiter = (req, res, next) => next();
+
+app.use("/api", (req, res, next) => apiLimiter(req, res, next));
+app.use("/api/auth/login", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/auth/register", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/auth/google", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/auth/verify-email", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/auth/resend-verification", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/auth/forgot-password", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/auth/reset-password", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/auth/forgot-password", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/auth/reset-password", (req, res, next) => authLimiter(req, res, next));
+app.use("/api/newsletter", (req, res, next) => newsletterLimiter(req, res, next));
+
+async function buildRateLimitStore(prefix) {
+  if (!isRedisEnabled()) return undefined;
   try {
-    extraOrigins.push(new URL(process.env.FRONTEND_URL).origin);
+    const redis = await getRedis();
+    if (!redis) return undefined;
+    const { RedisStore } = require("rate-limit-redis");
+    return new RedisStore({
+      sendCommand: (...args) => redis.call(...args),
+      prefix,
+    });
   } catch (error) {
-    // ignore invalid FRONTEND_URL
+    console.error("[rate-limit] Redis store unavailable:", error.message);
+    return undefined;
   }
 }
 
-const allowedOrigins = new Set([
-  ...shopOrigins,
-  ...extraOrigins,
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "http://localhost:5174",
-  "http://localhost:5175",
-]);
+async function createLimiters() {
+  const apiStore = await buildRateLimitStore("rl:api:");
+  const authStore = await buildRateLimitStore("rl:auth:");
+  const newsletterStore = await buildRateLimitStore("rl:newsletter:");
+  const common = {
+    standardHeaders: true,
+    legacyHeaders: false,
+  };
+
+  apiLimiter = rateLimit({
+    ...common,
+    ...(apiStore ? { store: apiStore } : {}),
+    windowMs: 60 * 1000,
+    limit: Number(process.env.RATE_LIMIT_PER_MINUTE || 300),
+    skip: (req) =>
+      req.originalUrl === "/api/payments/webhook" ||
+      req.originalUrl.startsWith("/api/health"),
+  });
+  authLimiter = rateLimit({
+    ...common,
+    ...(authStore ? { store: authStore } : {}),
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.AUTH_RATE_LIMIT || 30),
+    message: { success: false, message: "Too many attempts. Please wait and try again." },
+  });
+  newsletterLimiter = rateLimit({
+    ...common,
+    ...(newsletterStore ? { store: newsletterStore } : {}),
+    windowMs: 60 * 60 * 1000,
+    limit: 8,
+    message: { success: false, message: "Too many attempts. Please wait and try again." },
+  });
+
+  if (apiStore) {
+    console.log("[rate-limit] using Redis store");
+  }
+}
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -72,7 +133,7 @@ app.use((req, res, next) => {
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.has(origin)) {
+      if (isOriginAllowed(origin, allowedOrigins)) {
         callback(null, true);
         return;
       }
@@ -84,17 +145,20 @@ app.use(
   })
 );
 app.use(express.json({
-  limit: "10mb",
+  limit: process.env.JSON_BODY_LIMIT || "1mb",
   verify: (req, res, buf) => {
     if (req.originalUrl === "/api/payments/webhook") {
       req.rawBody = buf;
     }
   },
 }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: process.env.JSON_BODY_LIMIT || "1mb" }));
 
 // Static file serving for uploads
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/uploads", express.static(path.join(__dirname, "uploads"), {
+  maxAge: "7d",
+  etag: true,
+}));
 
 // API Routes
 app.use("/api/auth", require("./routes/auth"));
@@ -114,17 +178,74 @@ app.use("/api/storefront", require("./routes/storefront"));
 app.use("/api/orders", require("./routes/orders"));
 app.use("/api/payments", require("./routes/payments"));
 app.use("/api/subscriptions", require("./routes/subscriptions"));
+app.use("/api/referrals", require("./routes/referrals"));
 app.use("/api/notifications", require("./routes/notifications"));
 app.use("/api/vat", require("./routes/vat"));
 app.use("/api/users", require("./routes/users"));
+app.use("/api/newsletter", require("./routes/newsletter"));
+app.use("/api/support", require("./routes/support"));
 
-// Health check endpoint
-app.get("/api/health", (req, res) => {
+// Cache DB pings so uptime monitors don't hammer MySQL
+const HEALTH_DB_TTL_MS = Number(process.env.HEALTH_DB_TTL_MS || 5000);
+let healthDbCache = { at: 0, ok: false, error: null };
+
+async function checkDatabase() {
+  const now = Date.now();
+  if (now - healthDbCache.at < HEALTH_DB_TTL_MS) {
+    return healthDbCache;
+  }
+  try {
+    await db.sequelize.query("SELECT 1", { type: db.Sequelize.QueryTypes.SELECT });
+    healthDbCache = { at: now, ok: true, error: null };
+  } catch (error) {
+    healthDbCache = { at: now, ok: false, error: error.message };
+  }
+  return healthDbCache;
+}
+
+// Liveness: process is up (for load balancers / k8s) — no SQL
+app.get("/api/health/live", (req, res) => {
+  res.json({
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    uptime: Math.round(process.uptime()),
+    pid: process.pid,
+  });
+});
+
+// Readiness: dependencies reachable
+app.get("/api/health/ready", async (req, res) => {
+  const database = await checkDatabase();
+  const redis = await redisPing();
+  const ready = database.ok && (!redis.enabled || redis.ok);
+  res.status(ready ? 200 : 503).json({
+    status: ready ? "OK" : "UNAVAILABLE",
+    database: database.ok ? "up" : "down",
+    redis,
+    queue: queueStats(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Health check endpoint (backward compatible)
+app.get("/api/health", async (req, res) => {
+  const database = await checkDatabase();
+  if (!database.ok) {
+    return res.status(503).json({
+      status: "UNAVAILABLE",
+      message: "Database is not reachable",
+      timestamp: new Date().toISOString(),
+    });
+  }
+  const redis = await redisPing();
   res.json({
     status: "OK",
     message: "sakora Mobile API is running",
     timestamp: new Date().toISOString(),
-    version: "1.0.1",
+    version: "1.0.2",
+    uptime: Math.round(process.uptime()),
+    redis: redis.enabled ? (redis.ok ? "up" : "down") : "disabled",
+    queue: queueStats().backend,
   });
 });
 
@@ -170,30 +291,116 @@ app.use((err, req, res, next) => {
   res.status(statusCode).json(error);
 });
 
-// Database synchronization and server start
+function workerCount() {
+  const configured = Number(process.env.WEB_CONCURRENCY || 0);
+  if (configured > 0) return configured;
+  // Default single process — keeps VPS CPU/RAM quiet. Raise WEB_CONCURRENCY only if needed.
+  return 1;
+}
+
+async function prepareDatabase() {
+  await db.sequelize.authenticate();
+  console.log("Database connection established successfully.");
+  await ensureSchema(db.sequelize);
+  if (process.env.NODE_ENV !== "production") {
+    console.log("Syncing database tables...");
+    await db.sequelize.sync();
+    console.log("Database synchronized successfully.");
+  }
+}
+
+function listen() {
+  const server = app.listen(PORT, () => {
+    console.log(`sakora Mobile API server running on port ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(`Health check: http://localhost:${PORT}/api/health`);
+  });
+  attachLive(server);
+  listenForStockRelay();
+
+  // Embed job consumers unless a dedicated worker process is used
+  const embedWorker = process.env.QUEUE_WORKER_EMBEDDED !== "false";
+  if (embedWorker) {
+    startNotifyWorkers().catch((error) => {
+      console.error("[queue] failed to start embedded workers:", error.message);
+    });
+  }
+
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[shutdown] ${signal} received`);
+
+    const forceTimer = setTimeout(() => {
+      console.error("[shutdown] timed out, forcing exit");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    forceTimer.unref?.();
+
+    server.close(async () => {
+      try {
+        await stopNotifyWorkers();
+        await closeQueue();
+        await closeRedis();
+        await db.sequelize.close();
+      } catch (error) {
+        console.error("[shutdown] cleanup error:", error.message);
+      } finally {
+        clearTimeout(forceTimer);
+        process.exit(0);
+      }
+    });
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  return server;
+}
+
 async function startServer() {
   try {
-    // Test database connection
-    await db.sequelize.authenticate();
-    console.log("✅ Database connection established successfully.");
+    await createLimiters();
 
-    await ensureSchema(db.sequelize);
+    const count = workerCount();
+    const clustered = cluster.isPrimary && count > 1;
 
-    // Sync database (creates tables if they don't exist)
-    // Note: Using sync() without alter to avoid duplicate index issues
-    // For schema changes, use migrations or manually alter tables
-    console.log("🔄 Syncing database tables...");
-    await db.sequelize.sync(); // Using sync() without alter to avoid "too many keys" error
-    console.log("✅ Database synchronized successfully.");
+    if (clustered) {
+      await prepareDatabase();
+      await db.sequelize.close();
+      for (let i = 0; i < count; i += 1) cluster.fork();
+      cluster.on("message", (worker, message) => {
+        if (message?.type !== "stock") return;
+        for (const id of Object.keys(cluster.workers)) {
+          cluster.workers[id].send(message);
+        }
+      });
+      cluster.on("exit", (worker, code) => {
+        if (code !== 0 && !worker.exitedAfterDisconnect) {
+          console.error(`Worker ${worker.process.pid} exited. Starting another.`);
+          cluster.fork();
+        }
+      });
 
-    // Start server
-    app.listen(PORT, () => {
-      console.log(`🚀 sakora Mobile API server running on port ${PORT}`);
-      console.log(`📱 Environment: ${process.env.NODE_ENV || "development"}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/api/health`);
-    });
+      const shutdownPrimary = (signal) => {
+        console.log(`[shutdown] primary ${signal}`);
+        for (const id of Object.keys(cluster.workers)) {
+          cluster.workers[id]?.process.kill("SIGTERM");
+        }
+        setTimeout(() => process.exit(0), SHUTDOWN_TIMEOUT_MS).unref?.();
+      };
+      process.on("SIGTERM", () => shutdownPrimary("SIGTERM"));
+      process.on("SIGINT", () => shutdownPrimary("SIGINT"));
+      return;
+    }
+
+    if (count === 1) {
+      await prepareDatabase();
+    } else {
+      await db.sequelize.authenticate();
+    }
+    listen();
   } catch (error) {
-    console.error("❌ Unable to start server:", error);
+    console.error("Unable to start server:", error);
     process.exit(1);
   }
 }

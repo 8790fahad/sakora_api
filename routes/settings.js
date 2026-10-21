@@ -5,12 +5,47 @@ const {
   handleValidationErrors,
 } = require("../utils/validation");
 const { errorResponse, successResponse } = require("../utils/helpers");
-const { authenticate, authorize } = require("../middleware/auth");
+const { authenticate, authorize, requirePermission } = require("../middleware/auth");
 const db = require("../models");
+const { resolveSellingMode } = require("../utils/sellingMode");
 const path = require("path");
 const fs = require("fs").promises;
 
 const router = express.Router();
+
+function asObject(value) {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeBankAccounts(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const id = String(item.id || "").trim();
+      const bankName = String(item.bankName || "").trim();
+      const accountName = String(item.accountName || "").trim();
+      const accountNumber = String(item.accountNumber || "")
+        .replace(/\s+/g, "")
+        .trim();
+      if (!id || !bankName || !accountName || !accountNumber) return null;
+      return {
+        id,
+        bankName: bankName.slice(0, 80),
+        accountName: accountName.slice(0, 120),
+        accountNumber: accountNumber.slice(0, 20),
+        isDefault: Boolean(item.isDefault),
+      };
+    })
+    .filter(Boolean);
+}
 
 // Get business settings
 router.get("/", authenticate, async (req, res) => {
@@ -20,10 +55,17 @@ router.get("/", authenticate, async (req, res) => {
       attributes: [
         "id",
         "name",
+        "description",
+        "businessType",
         "address",
+        "city",
+        "state",
+        "country",
         "phone",
         "email",
+        "website",
         "currency",
+        "currencySymbol",
         "taxEnabled",
         "taxRate",
         "taxName",
@@ -54,7 +96,19 @@ router.get("/", authenticate, async (req, res) => {
           includeBusinessInfo: true,
           includeItemDetails: true,
           includeTaxBreakdown: true,
+          includeInvoice: true,
+          includeWaybill: true,
           footerText: "Thank you for your business!",
+          invoice: {
+            paperFormat: "a4",
+            orientation: "portrait",
+            colorMode: "color",
+          },
+          waybill: {
+            paperFormat: "thermal",
+            orientation: "portrait",
+            colorMode: "mono",
+          },
         },
         lowStockThreshold: 10,
         autoBackup: false,
@@ -78,28 +132,78 @@ router.get("/", authenticate, async (req, res) => {
         requirePasswordChange: false,
         twoFactorEnabled: false,
       },
+      pos: {
+        defaultPaymentMethod: "cash",
+        defaultBankAccountId: null,
+      },
     };
 
     // Merge with saved settings
-    const businessSettings = business.settings
-      ? JSON.parse(business.settings)
-      : {};
-    const userPreferences = user.preferences
-      ? JSON.parse(user.preferences)
-      : {};
+    const businessSettings = asObject(business.settings);
+    const userPreferences = asObject(user.preferences);
+    const bankAccounts = normalizeBankAccounts(businessSettings.bankAccounts);
 
     const settings = {
       business: {
         ...defaultSettings.business,
         ...businessSettings,
+        name: business.name || "",
+        description: business.description || "",
+        businessType: business.businessType || "retail",
+        address: business.address || "",
+        city: business.city || "",
+        state: business.state || "",
+        country: business.country || "Nigeria",
+        phone: business.phone || "",
+        email: business.email || "",
+        website: business.website || "",
         currency: business.currency || defaultSettings.business.currency,
-        taxEnabled: business.taxEnabled || defaultSettings.business.taxEnabled,
+        currencySymbol:
+          business.currencySymbol || defaultSettings.business.currencySymbol || "₦",
+        taxEnabled: Boolean(business.taxEnabled),
         taxRate:
           business.taxRate !== null && business.taxRate !== undefined
             ? parseFloat(business.taxRate)
             : defaultSettings.business.taxRate,
         taxName: business.taxName || defaultSettings.business.taxName,
         taxTin: business.taxTin || defaultSettings.business.taxTin,
+        bankAccounts,
+        receiptSettings: (() => {
+          const defaults = defaultSettings.business.receiptSettings;
+          const saved = businessSettings.receiptSettings || {};
+          const legacy = {
+            paperFormat: saved.paperFormat,
+            orientation: saved.orientation,
+            colorMode: saved.colorMode,
+          };
+          return {
+            ...defaults,
+            ...saved,
+            invoice: {
+              ...defaults.invoice,
+              ...(legacy.paperFormat || legacy.orientation || legacy.colorMode
+                ? {
+                    paperFormat: legacy.paperFormat || defaults.invoice.paperFormat,
+                    orientation:
+                      legacy.orientation || defaults.invoice.orientation,
+                    colorMode: legacy.colorMode || defaults.invoice.colorMode,
+                  }
+                : {}),
+              ...(saved.invoice || {}),
+            },
+            waybill: {
+              ...defaults.waybill,
+              ...(saved.waybill || {}),
+            },
+          };
+        })(),
+      },
+      bankAccounts,
+      profile: {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
       },
       notifications: {
         ...defaultSettings.notifications,
@@ -112,6 +216,10 @@ router.get("/", authenticate, async (req, res) => {
       security: {
         ...defaultSettings.security,
         ...businessSettings.security,
+      },
+      pos: {
+        ...defaultSettings.pos,
+        ...userPreferences.pos,
       },
     };
 
@@ -129,8 +237,31 @@ router.put(
   "/business",
   [
     authenticate,
-    authorize(["owner", "manager"]),
+    requirePermission("settings.manage"),
+    body("name").optional().trim().isLength({ min: 2, max: 100 }),
+    body("description").optional().trim().isLength({ max: 1000 }),
+    body("businessType")
+      .optional()
+      .isIn([
+        "retail",
+        "wholesale",
+        "manufacturing",
+        "restaurant",
+        "pharmacy",
+        "supermarket",
+        "fashion",
+        "electronics",
+        "other",
+      ]),
+    body("address").optional().trim().isLength({ max: 500 }),
+    body("city").optional().trim().isLength({ max: 100 }),
+    body("state").optional().trim().isLength({ max: 100 }),
+    body("country").optional().trim().isLength({ max: 100 }),
+    body("phone").optional().trim().isLength({ max: 40 }),
+    body("email").optional({ values: "falsy" }).isEmail().normalizeEmail(),
+    body("website").optional({ values: "falsy" }).isURL(),
     body("currency").optional().isLength({ min: 3, max: 3 }),
+    body("currencySymbol").optional().isLength({ min: 1, max: 5 }),
     body("taxEnabled").optional().isBoolean(),
     body("taxRate").optional().isFloat({ min: 0, max: 100 }),
     body("taxName").optional().isLength({ min: 1, max: 50 }),
@@ -141,7 +272,18 @@ router.put(
   async (req, res) => {
     try {
       const {
+        name,
+        description,
+        businessType,
+        address,
+        city,
+        state,
+        country,
+        phone,
+        email,
+        website,
         currency,
+        currencySymbol,
         taxEnabled,
         taxRate,
         taxName,
@@ -154,23 +296,42 @@ router.put(
         return res.status(404).json(errorResponse("Business not found"));
       }
 
-      // Update business fields
       const updateData = {};
-      if (currency !== undefined) updateData.currency = currency;
+      if (name !== undefined) updateData.name = name;
+      if (description !== undefined) updateData.description = description;
+      if (businessType !== undefined) updateData.businessType = businessType;
+      if (address !== undefined) updateData.address = address;
+      if (city !== undefined) updateData.city = city;
+      if (state !== undefined) updateData.state = state;
+      if (country !== undefined) updateData.country = country;
+      if (phone !== undefined) updateData.phone = phone || null;
+      if (email !== undefined) updateData.email = email || null;
+      if (website !== undefined) updateData.website = website || null;
+      if (currency !== undefined) {
+        updateData.currency = currency;
+        const symbols = { NGN: "₦", USD: "$", EUR: "€", GBP: "£" };
+        updateData.currencySymbol =
+          currencySymbol || symbols[currency] || business.currencySymbol || "₦";
+      }
+      if (currencySymbol !== undefined) updateData.currencySymbol = currencySymbol;
       if (taxEnabled !== undefined) updateData.taxEnabled = taxEnabled;
       if (taxRate !== undefined) updateData.taxRate = taxRate;
       if (taxName !== undefined) updateData.taxName = taxName;
       if (taxTin !== undefined) updateData.taxTin = taxTin;
 
-      // Update additional settings
       if (additionalSettings) {
-        const currentSettings = business.settings
-          ? JSON.parse(business.settings)
-          : {};
-        updateData.settings = JSON.stringify({
-          ...currentSettings,
+        const nextSettings = {
+          ...asObject(business.settings),
           ...additionalSettings,
-        });
+        };
+        if (additionalSettings.bankAccounts !== undefined) {
+          const banks = normalizeBankAccounts(additionalSettings.bankAccounts);
+          if (banks.length && !banks.some((b) => b.isDefault)) {
+            banks[0].isDefault = true;
+          }
+          nextSettings.bankAccounts = banks;
+        }
+        updateData.settings = nextSettings;
       }
 
       await business.update(updateData);
@@ -200,17 +361,30 @@ router.put(
         return res.status(404).json(errorResponse("User not found"));
       }
 
-      const currentPreferences = user.preferences
-        ? JSON.parse(user.preferences)
-        : {};
-      const updatedPreferences = {
-        ...currentPreferences,
+      const current = asObject(user.preferences);
+      const nextPreferences = {
+        ...current,
         ...preferences,
       };
+      if (preferences.pos) {
+        nextPreferences.pos = {
+          ...(current.pos || {}),
+          ...preferences.pos,
+        };
+        if (
+          nextPreferences.pos.defaultPaymentMethod !== "bank" &&
+          nextPreferences.pos.defaultPaymentMethod !== "cash"
+        ) {
+          nextPreferences.pos.defaultPaymentMethod = "cash";
+        }
+        if (nextPreferences.pos.defaultBankAccountId != null) {
+          nextPreferences.pos.defaultBankAccountId = String(
+            nextPreferences.pos.defaultBankAccountId
+          );
+        }
+      }
 
-      await user.update({
-        preferences: JSON.stringify(updatedPreferences),
-      });
+      await user.update({ preferences: nextPreferences });
 
       res.json(successResponse("User preferences updated successfully"));
     } catch (error) {
@@ -692,5 +866,58 @@ router.post(
     }
   }
 );
+
+router.get("/selling-mode", authenticate, async (req, res) => {
+  try {
+    const business = await db.Business.findByPk(req.user.businessId);
+    if (!business) {
+      return res.status(404).json(errorResponse("Business not found"));
+    }
+    const resolved = resolveSellingMode({
+      storefrontEnabled: business.storefrontEnabled,
+      requested: business.sellingMode,
+    });
+    res.json(
+      successResponse("Selling mode", {
+        mode: resolved.mode,
+        locked: resolved.locked,
+        storefrontEnabled: Boolean(business.storefrontEnabled),
+      })
+    );
+  } catch (error) {
+    res.status(500).json(errorResponse("Failed to load selling mode", error.message));
+  }
+});
+
+router.put("/selling-mode", authenticate, async (req, res) => {
+  try {
+    const requested = req.body.mode === "hybrid" ? "hybrid" : "online";
+    const business = await db.Business.findByPk(req.user.businessId);
+    if (!business) {
+      return res.status(404).json(errorResponse("Business not found"));
+    }
+    if (business.storefrontEnabled && requested === "hybrid") {
+      return res.status(400).json(
+        errorResponse(
+          "Turn the storefront off before selling offline. A public shop stays online only."
+        )
+      );
+    }
+    await business.update({ sellingMode: requested });
+    const resolved = resolveSellingMode({
+      storefrontEnabled: business.storefrontEnabled,
+      requested,
+    });
+    res.json(
+      successResponse("Selling mode updated", {
+        mode: resolved.mode,
+        locked: resolved.locked,
+        storefrontEnabled: Boolean(business.storefrontEnabled),
+      })
+    );
+  } catch (error) {
+    res.status(500).json(errorResponse("Failed to update selling mode", error.message));
+  }
+});
 
 module.exports = router;

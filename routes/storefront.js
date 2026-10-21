@@ -40,7 +40,7 @@ router.get("/settings", authenticate, requirePermission("storefront.manage"), as
         enabled: Boolean(business.storefrontEnabled),
         name: business.name,
         settings: business.storefrontSettings || {},
-        url: `${squad.FRONTEND_URL}/shop/${business.storefrontSlug}`,
+        url: `${squad.STOREFRONT_URL}/${business.storefrontSlug}`,
       })
     );
   } catch (error) {
@@ -54,6 +54,7 @@ router.put("/settings", authenticate, requirePermission("storefront.manage"), as
     const updates = {};
     if (typeof req.body.enabled === "boolean") {
       updates.storefrontEnabled = req.body.enabled;
+      if (req.body.enabled) updates.sellingMode = "online";
     }
     if (req.body.slug) {
       updates.storefrontSlug = await uniqueSlug(db, req.body.slug, business.id);
@@ -71,7 +72,7 @@ router.put("/settings", authenticate, requirePermission("storefront.manage"), as
         enabled: Boolean(business.storefrontEnabled),
         name: business.name,
         settings: business.storefrontSettings || {},
-        url: `${squad.FRONTEND_URL}/shop/${business.storefrontSlug}`,
+        url: `${squad.STOREFRONT_URL}/${business.storefrontSlug}`,
       })
     );
   } catch (error) {
@@ -119,6 +120,8 @@ router.get("/:slug", async (req, res) => {
           slug: business.storefrontSlug,
           description: business.description,
           logo: business.logo,
+          primaryColor: business.primaryColor || "#0D9488",
+          secondaryColor: business.secondaryColor || "#134E4A",
           currency: business.currency,
           currencySymbol: business.currencySymbol,
           phone: business.phone,
@@ -311,7 +314,7 @@ router.post(
         );
       }
 
-      const callbackUrl = `${squad.FRONTEND_URL}/shop/${business.storefrontSlug}/order/${order.orderNumber}`;
+      const callbackUrl = `${squad.STOREFRONT_URL}/${business.storefrontSlug}/order/${order.orderNumber}`;
       const initiated = await squad.initiatePayment({
         email: customerEmail,
         amount: total,
@@ -400,6 +403,94 @@ router.get("/:slug/orders/:orderNumber", async (req, res) => {
     res.status(500).json(errorResponse("Failed to load order", error.message));
   }
 });
+
+// Public customer complaint / report about an order
+router.post(
+  "/:slug/orders/:orderNumber/complaint",
+  [
+    body("message").trim().isLength({ min: 5, max: 2000 }),
+    body("name").optional().trim().isLength({ max: 120 }),
+    body("contact").optional().trim().isLength({ max: 120 }),
+    handleValidationErrors,
+  ],
+  async (req, res) => {
+    try {
+      const business = await loadStore(req.params.slug);
+      if (!business) {
+        return res.status(404).json(errorResponse("Storefront not found"));
+      }
+
+      const order = await db.Order.findOne({
+        where: {
+          businessId: business.id,
+          orderNumber: req.params.orderNumber,
+        },
+      });
+      if (!order) {
+        return res.status(404).json(errorResponse("Order not found"));
+      }
+
+      const name = String(req.body.name || order.customerName || "Customer").trim();
+      const contact = String(
+        req.body.contact || order.customerPhone || order.customerEmail || ""
+      ).trim();
+      const message = String(req.body.message || "").trim();
+      const note = [
+        `[Complaint ${new Date().toISOString()}]`,
+        `From: ${name}${contact ? ` (${contact})` : ""}`,
+        message,
+      ].join("\n");
+
+      const existingNotes = String(order.notes || "").trim();
+      await order.update({
+        notes: existingNotes ? `${existingNotes}\n\n${note}` : note,
+      });
+
+      if (db.Notification) {
+        try {
+          const { createNotification } = require("../services/notify");
+          await createNotification({
+            businessId: business.id,
+            title: `Order complaint — ${order.orderNumber}`,
+            message: `${name}: ${message.slice(0, 180)}`,
+            type: "order",
+            actionUrl: `/orders`,
+            metadata: {
+              orderId: order.id,
+              orderNumber: order.orderNumber,
+              kind: "complaint",
+            },
+          });
+        } catch (notifyError) {
+          console.warn("Complaint notification skipped:", notifyError.message);
+        }
+      }
+
+      const ownerEmail = business.email || process.env.SUPPORT_EMAIL;
+      if (ownerEmail) {
+        const { enqueueSafe } = require("../queues/jobQueue");
+        enqueueSafe("notify.email", {
+          businessId: business.id,
+          to: ownerEmail,
+          subject: `Order complaint: ${order.orderNumber}`,
+          text: `Shop: ${business.name}\nOrder: ${order.orderNumber}\nFrom: ${name}\nContact: ${contact || "—"}\n\n${message}`,
+          templateKey: "support",
+        });
+      }
+
+      res.json(
+        successResponse("Complaint submitted. The shop will follow up shortly.", {
+          ok: true,
+        })
+      );
+    } catch (error) {
+      console.error("Order complaint error:", error);
+      res
+        .status(500)
+        .json(errorResponse("Failed to submit complaint", error.message));
+    }
+  }
+);
 
 router.post("/:slug/orders/:orderNumber/verify", async (req, res) => {
   try {

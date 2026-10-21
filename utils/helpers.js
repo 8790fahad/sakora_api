@@ -206,6 +206,24 @@ const generateSKU = (productName, categoryName = "") => {
   return `${categoryCode}${nameCode}${timestamp}`;
 };
 
+/** YYYY-MM-DD for today (UTC date component is fine for DATEONLY alerts). */
+const todayDateOnly = () => new Date().toISOString().slice(0, 10);
+
+/** Last date (inclusive) that should trigger an expiry alert. */
+const getExpiryAlertCutoff = (days = 30) => {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() + Math.max(0, parseInt(days, 10) || 30));
+  return d.toISOString().slice(0, 10);
+};
+
+const daysUntilDate = (dateOnly) => {
+  if (!dateOnly) return null;
+  const today = new Date(`${todayDateOnly()}T00:00:00Z`);
+  const target = new Date(`${String(dateOnly).slice(0, 10)}T00:00:00Z`);
+  return Math.round((target - today) / (1000 * 60 * 60 * 24));
+};
+
 // Error response helper
 const errorResponse = (message = "An error occurred", details = null) => {
   return {
@@ -237,6 +255,9 @@ module.exports = {
   getDateRange,
   sanitizeFilename,
   generateSKU,
+  todayDateOnly,
+  getExpiryAlertCutoff,
+  daysUntilDate,
   errorResponse,
   successResponse,
 };

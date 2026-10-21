@@ -5,6 +5,7 @@ const SQUAD_PUBLIC_KEY = process.env.SQUAD_PUBLIC_KEY || "";
 const SQUAD_BASE_URL =
   process.env.SQUAD_BASE_URL || "https://sandbox-api-d.squadco.com";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+const STOREFRONT_URL = process.env.STOREFRONT_URL || "http://localhost:5175";
 
 const isConfigured = () => Boolean(SQUAD_SECRET_KEY);
 
@@ -97,14 +98,27 @@ const verifyPayment = async (transactionRef) => {
 const isSuccessful = (status) =>
   String(status || "").toLowerCase() === "success";
 
+const timingSafeEqualHex = (a, b) => {
+  const left = Buffer.from(String(a || ""), "utf8");
+  const right = Buffer.from(String(b || ""), "utf8");
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+};
+
 const verifyWebhookSignature = (rawBody, signature) => {
-  if (!SQUAD_SECRET_KEY || !signature) return !isConfigured();
+  // Fail closed in production when Squad is not configured.
+  if (!SQUAD_SECRET_KEY) {
+    return process.env.NODE_ENV !== "production";
+  }
+  if (!signature || !rawBody) return false;
+
   const hash = crypto
     .createHmac("sha512", SQUAD_SECRET_KEY)
     .update(rawBody)
     .digest("hex")
     .toUpperCase();
-  return hash === String(signature).toUpperCase();
+
+  return timingSafeEqualHex(hash, String(signature).toUpperCase());
 };
 
 module.exports = {
@@ -116,4 +130,5 @@ module.exports = {
   verifyWebhookSignature,
   SQUAD_PUBLIC_KEY,
   FRONTEND_URL,
+  STOREFRONT_URL,
 };

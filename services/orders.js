@@ -1,6 +1,8 @@
 const moment = require("moment");
 const db = require("../models");
 const { notifyPaymentSuccess } = require("./notify");
+const { publishStock } = require("../utils/live");
+const { awardReferralCommission } = require("../utils/referrals");
 
 const fulfillPaidOrder = async (order, payment, extra = {}) => {
   if (order.paymentStatus === "paid") {
@@ -67,6 +69,10 @@ const fulfillPaidOrder = async (order, payment, extra = {}) => {
       include: [{ model: db.OrderItem, as: "items" }],
     });
     await notifyPaymentSuccess(fresh, business);
+    const productIds = (fresh.items || []).map((item) => item.productId).filter(Boolean);
+    publishStock(locked.businessId, productIds).catch((error) => {
+      console.error("Storefront stock publish failed:", error.message);
+    });
     return fresh;
   } catch (error) {
     await transaction.rollback();
@@ -79,17 +85,16 @@ const activateSubscription = async (subscription, payment, extra = {}) => {
   const interval =
     subscription.metadata?.interval || payment.metadata?.interval || "month";
   const end = moment().add(interval === "year" ? 12 : 1, "month");
-
   await payment.update({
     status: "success",
-    paidAt: new Date(),
+    paidAt: payment.paidAt || new Date(),
     metadata: { ...(payment.metadata || {}), ...extra },
   });
 
   await subscription.update({
     status: "active",
     paymentReference: payment.providerReference,
-    currentPeriodStart: start.toDate(),
+    currentPeriodStart: subscription.currentPeriodStart || start.toDate(),
     currentPeriodEnd: end.toDate(),
   });
 
@@ -98,6 +103,12 @@ const activateSubscription = async (subscription, payment, extra = {}) => {
     subscriptionPlan: subscription.plan,
     subscriptionExpiry: end.toDate(),
   });
+
+  try {
+    await awardReferralCommission({ business, subscription, payment });
+  } catch (error) {
+    console.error("Referral commission award failed:", error.message);
+  }
 
   return { subscription, business };
 };

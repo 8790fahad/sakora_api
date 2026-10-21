@@ -13,8 +13,12 @@ const {
   serializeUser,
   ALL_PERMISSIONS,
 } = require("../utils/permissions");
-const { sendEmail } = require("../services/mail");
+const { enqueueSafe } = require("../queues/jobQueue");
 const { createNotification } = require("../services/notify");
+const {
+  assertBranchInBusiness,
+  handleTenantError,
+} = require("../utils/tenant");
 
 const router = express.Router();
 
@@ -65,6 +69,11 @@ router.post(
     body("lastName").trim().isLength({ min: 2, max: 50 }),
     body("role").isIn(["manager", "staff"]),
     body("permissions").optional().isArray(),
+    body("preferences").optional().isObject(),
+    body("preferences.pos.defaultPaymentMethod")
+      .optional()
+      .isIn(["cash", "bank"]),
+    body("preferences.pos.defaultBankAccountId").optional({ nullable: true }),
     handleValidationErrors,
   ],
   async (req, res) => {
@@ -78,6 +87,7 @@ router.post(
         role,
         branchId,
         permissions,
+        preferences,
       } = req.body;
 
       const existing = await db.User.findOne({
@@ -90,6 +100,16 @@ router.post(
           .json(errorResponse("A user already exists with this email"));
       }
 
+      const assignedBranchId = branchId || req.user.branchId;
+      await assertBranchInBusiness(assignedBranchId, req.user.businessId);
+
+      const defaultPaymentMethod =
+        preferences?.pos?.defaultPaymentMethod === "bank" ? "bank" : "cash";
+      const defaultBankAccountId =
+        preferences?.pos?.defaultBankAccountId
+          ? String(preferences.pos.defaultBankAccountId)
+          : null;
+
       const user = await db.User.create({
         email,
         password,
@@ -99,10 +119,17 @@ router.post(
         role,
         status: "active",
         businessId: req.user.businessId,
-        branchId: branchId || req.user.branchId,
+        branchId: assignedBranchId,
         permissions: Array.isArray(permissions)
           ? permissions.filter((key) => ALL_PERMISSIONS.includes(key))
           : null,
+        preferences: {
+          pos: {
+            defaultPaymentMethod,
+            defaultBankAccountId:
+              defaultPaymentMethod === "bank" ? defaultBankAccountId : null,
+          },
+        },
       });
 
       await createNotification({
@@ -114,7 +141,7 @@ router.post(
         actionUrl: "/dashboard",
       });
 
-      await sendEmail({
+      await enqueueSafe("notify.email", {
         businessId: req.user.businessId,
         to: email,
         subject: "You have been added to Sakora",
@@ -126,6 +153,7 @@ router.post(
         successResponse("Team member added", { user: serializeUser(user) })
       );
     } catch (error) {
+      if (handleTenantError(res, error)) return;
       console.error("Create user error:", error);
       res.status(500).json(errorResponse("Failed to add user", error.message));
     }
@@ -140,6 +168,8 @@ router.put(
     body("role").optional().isIn(["manager", "staff"]),
     body("status").optional().isIn(["active", "inactive"]),
     body("permissions").optional().isArray(),
+    body("defaultPaymentMethod").optional().isIn(["cash", "bank"]),
+    body("defaultBankAccountId").optional({ nullable: true }),
     handleValidationErrors,
   ],
   async (req, res) => {
@@ -150,24 +180,58 @@ router.put(
       if (!user) {
         return res.status(404).json(errorResponse("User not found"));
       }
-      if (user.role === "owner") {
+      if (user.role === "owner" && req.user.id !== user.id) {
         return res
           .status(400)
           .json(errorResponse("The business owner cannot be modified this way"));
       }
 
       const updates = {};
-      if (req.body.role) updates.role = req.body.role;
-      if (req.body.status) updates.status = req.body.status;
-      if (req.body.branchId) updates.branchId = req.body.branchId;
-      if (Array.isArray(req.body.permissions)) {
+      if (req.body.role && user.role !== "owner") updates.role = req.body.role;
+      if (req.body.status && user.role !== "owner") updates.status = req.body.status;
+      if (req.body.branchId && user.role !== "owner") {
+        await assertBranchInBusiness(req.body.branchId, req.user.businessId);
+        updates.branchId = req.body.branchId;
+      }
+      if (Array.isArray(req.body.permissions) && user.role !== "owner") {
         updates.permissions = req.body.permissions.filter((key) =>
           ALL_PERMISSIONS.includes(key)
         );
       }
+      if (
+        req.body.defaultPaymentMethod !== undefined ||
+        req.body.defaultBankAccountId !== undefined
+      ) {
+        const preferences =
+          user.preferences && typeof user.preferences === "object"
+            ? { ...user.preferences }
+            : {};
+        const nextMethod =
+          req.body.defaultPaymentMethod === "bank" ||
+          req.body.defaultPaymentMethod === "cash"
+            ? req.body.defaultPaymentMethod
+            : preferences.pos?.defaultPaymentMethod === "bank"
+              ? "bank"
+              : "cash";
+        const nextBankId =
+          req.body.defaultBankAccountId !== undefined
+            ? req.body.defaultBankAccountId
+              ? String(req.body.defaultBankAccountId)
+              : null
+            : preferences.pos?.defaultBankAccountId || null;
+        updates.preferences = {
+          ...preferences,
+          pos: {
+            ...(preferences.pos || {}),
+            defaultPaymentMethod: nextMethod,
+            defaultBankAccountId: nextMethod === "bank" ? nextBankId : null,
+          },
+        };
+      }
       await user.update(updates);
       res.json(successResponse("User updated", { user: serializeUser(user) }));
     } catch (error) {
+      if (handleTenantError(res, error)) return;
       res.status(500).json(errorResponse("Failed to update user", error.message));
     }
   }

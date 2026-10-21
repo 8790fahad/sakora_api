@@ -1,7 +1,12 @@
 const express = require("express");
 const { query } = require("express-validator");
 const { validationRules, handleValidationErrors } = require("../utils/validation");
-const { errorResponse, successResponse } = require("../utils/helpers");
+const {
+  errorResponse,
+  successResponse,
+  getExpiryAlertCutoff,
+  daysUntilDate,
+} = require("../utils/helpers");
 const { authenticate } = require("../middleware/auth");
 const db = require("../models");
 
@@ -289,6 +294,30 @@ router.get("/stats", authenticate, async (req, res) => {
     // Calculate today's profit
     const todayProfit = (todayRevenue || 0) - (todayExpenses || 0);
 
+    // Expiry alerts (products with expiry on or before cutoff)
+    const business = await db.Business.findByPk(req.user.businessId, {
+      attributes: ["settings"],
+    });
+    const expiryAlertDays = business?.settings?.expiryAlertDays ?? 30;
+    const expiryCutoff = getExpiryAlertCutoff(expiryAlertDays);
+    const expiringWhere = {
+      businessId: req.user.businessId,
+      status: "active",
+      expiryDate: {
+        [db.Sequelize.Op.ne]: null,
+        [db.Sequelize.Op.lte]: expiryCutoff,
+      },
+    };
+    const [expiringCount, expiringProducts] = await Promise.all([
+      db.Product.count({ where: expiringWhere }),
+      db.Product.findAll({
+        where: expiringWhere,
+        attributes: ["id", "name", "sku", "expiryDate"],
+        order: [["expiryDate", "ASC"]],
+        limit: 10,
+      }),
+    ]);
+
     const stats = {
       // Today's performance
       today: {
@@ -316,6 +345,7 @@ router.get("/stats", authenticate, async (req, res) => {
         products: totalProducts || 0,
         inventoryValue: parseFloat(totalInventoryValue[0]?.get("totalValue")) || 0,
         lowStockItems: lowStockCount || 0,
+        expiringItems: expiringCount || 0,
       },
 
       // Recent activities
@@ -350,6 +380,14 @@ router.get("/stats", authenticate, async (req, res) => {
           sku: item.product?.sku,
           currentStock: item.quantity,
           reorderPoint: item.reorderPoint,
+        })),
+        expiring: (expiringProducts || []).map((item) => ({
+          productId: item.id,
+          name: item.name,
+          sku: item.sku,
+          expiryDate: item.expiryDate,
+          daysUntilExpiry: daysUntilDate(item.expiryDate),
+          isExpired: daysUntilDate(item.expiryDate) < 0,
         })),
         overduePayments: (overduePayments || []).map((item) => ({
           purchaseId: item.id,
@@ -654,8 +692,15 @@ router.get("/alerts", authenticate, async (req, res) => {
       branchId: req.user.branchId,
     };
 
-    const [lowStockProducts, overduePayments, lowCashBalance] = await Promise.all([
-      // Low stock alerts
+    const business = await db.Business.findByPk(req.user.businessId, {
+      attributes: ["settings"],
+    });
+    const expiryAlertDays = business?.settings?.expiryAlertDays ?? 30;
+    const expiryCutoff = getExpiryAlertCutoff(expiryAlertDays);
+
+    const [lowStockProducts, expiringProducts, overduePayments, lowCashBalance] =
+      await Promise.all([
+      // Low stock / reorder alerts
       db.Inventory.findAll({
         where: {
           ...branchWhereClause,
@@ -669,6 +714,21 @@ router.get("/alerts", authenticate, async (req, res) => {
           },
         ],
         attributes: ["quantity", "reorderPoint"],
+        limit: 10,
+      }),
+
+      // Expiry alerts
+      db.Product.findAll({
+        where: {
+          businessId: req.user.businessId,
+          status: "active",
+          expiryDate: {
+            [db.Sequelize.Op.ne]: null,
+            [db.Sequelize.Op.lte]: expiryCutoff,
+          },
+        },
+        attributes: ["name", "sku", "expiryDate"],
+        order: [["expiryDate", "ASC"]],
         limit: 10,
       }),
 
@@ -699,13 +759,13 @@ router.get("/alerts", authenticate, async (req, res) => {
 
     const alerts = [];
 
-    // Low stock alerts
+    // Low stock / reorder alerts
     if (lowStockProducts.length > 0) {
       alerts.push({
         id: "low-stock",
         type: "warning",
-        title: "Low Stock Alert",
-        message: `${lowStockProducts.length} products are running low`,
+        title: "Reorder Level Alert",
+        message: `${lowStockProducts.length} products are at or below reorder level`,
         priority: "medium",
         count: lowStockProducts.length,
         details: lowStockProducts.map((item) => ({
@@ -713,6 +773,30 @@ router.get("/alerts", authenticate, async (req, res) => {
           sku: item.product?.sku,
           currentStock: item.quantity,
           reorderPoint: item.reorderPoint,
+        })),
+      });
+    }
+
+    // Expiry alerts
+    if (expiringProducts.length > 0) {
+      const expiredCount = expiringProducts.filter(
+        (item) => daysUntilDate(item.expiryDate) < 0
+      ).length;
+      alerts.push({
+        id: "expiry",
+        type: expiredCount > 0 ? "error" : "warning",
+        title: "Expiry Alert",
+        message:
+          expiredCount > 0
+            ? `${expiredCount} expired, ${expiringProducts.length - expiredCount} expiring soon`
+            : `${expiringProducts.length} products are expiring within ${expiryAlertDays} days`,
+        priority: expiredCount > 0 ? "high" : "medium",
+        count: expiringProducts.length,
+        details: expiringProducts.map((item) => ({
+          name: item.name,
+          sku: item.sku,
+          expiryDate: item.expiryDate,
+          daysUntilExpiry: daysUntilDate(item.expiryDate),
         })),
       });
     }

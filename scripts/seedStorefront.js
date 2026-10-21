@@ -91,7 +91,7 @@ async function run() {
     console.log("Marked existing products as online");
   }
 
-  console.log(`Storefront ready: /shop/${business.storefrontSlug}`);
+  console.log(`Storefront ready: /${business.storefrontSlug}`);
   process.exit(0);
 }
 

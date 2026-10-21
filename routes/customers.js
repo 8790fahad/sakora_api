@@ -12,6 +12,7 @@ const {
 } = require("../utils/helpers");
 const { authenticate, authorize } = require("../middleware/auth");
 const db = require("../models");
+const { pickAllowed } = require("../utils/tenant");
 
 const router = express.Router();
 
@@ -59,7 +60,7 @@ router.get(
           {
             model: db.Sale,
             as: "sales",
-            attributes: ["id", "totalAmount", "date", "paymentStatus"],
+            attributes: ["id", "total", "date", "paymentStatus"],
             required: false,
           },
         ],
@@ -72,13 +73,13 @@ router.get(
             db.Sale.count({
               where: { customerId: customer.id },
             }),
-            db.Sale.sum("totalAmount", {
+            db.Sale.sum("total", {
               where: { customerId: customer.id },
             }),
-            db.Sale.sum("totalAmount", {
+            db.Sale.sum("total", {
               where: {
                 customerId: customer.id,
-                paymentStatus: ["pending", "partial"],
+                paymentStatus: ["unpaid", "partial"],
               },
             }),
           ]);
@@ -154,17 +155,17 @@ router.get(
       const [totalSales, totalAmount, outstandingAmount, lastSale] =
         await Promise.all([
           db.Sale.count({ where: { customerId: id } }),
-          db.Sale.sum("totalAmount", { where: { customerId: id } }),
-          db.Sale.sum("totalAmount", {
+          db.Sale.sum("total", { where: { customerId: id } }),
+          db.Sale.sum("total", {
             where: {
               customerId: id,
-              paymentStatus: ["pending", "partial"],
+              paymentStatus: ["unpaid", "partial"],
             },
           }),
           db.Sale.findOne({
             where: { customerId: id },
             order: [["date", "DESC"]],
-            attributes: ["date", "totalAmount"],
+            attributes: ["date", "total"],
           }),
         ]);
 
@@ -175,7 +176,7 @@ router.get(
           totalAmount: totalAmount || 0,
           outstandingAmount: outstandingAmount || 0,
           lastSaleDate: lastSale?.date,
-          lastSaleAmount: lastSale?.totalAmount,
+          lastSaleAmount: lastSale?.total,
         },
       };
 
@@ -283,7 +284,16 @@ router.put(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const updates = req.body;
+      const updates = pickAllowed(req.body, [
+        "name",
+        "phone",
+        "email",
+        "address",
+        "notes",
+        "tin",
+        "customerType",
+        "status",
+      ]);
 
       const customer = await db.Customer.findOne({
         where: {
@@ -534,7 +544,7 @@ router.get("/summary/stats", authenticate, async (req, res) => {
           "name",
           "phone",
           [db.sequelize.fn("COUNT", db.sequelize.col("sales.id")), "salesCount"],
-          [db.sequelize.fn("SUM", db.sequelize.col("sales.totalAmount")), "totalAmount"],
+          [db.sequelize.fn("SUM", db.sequelize.col("sales.total")), "totalAmount"],
         ],
         group: ["Customer.id"],
         order: [[db.sequelize.literal("totalAmount"), "DESC"]],
@@ -549,7 +559,7 @@ router.get("/summary/stats", authenticate, async (req, res) => {
             model: db.Sale,
             as: "sales",
             where: {
-              paymentStatus: ["pending", "partial"],
+              paymentStatus: ["unpaid", "partial"],
             },
             attributes: [],
           },
@@ -558,7 +568,7 @@ router.get("/summary/stats", authenticate, async (req, res) => {
           "id",
           "name",
           "phone",
-          [db.sequelize.fn("SUM", db.sequelize.col("sales.totalAmount")), "outstandingAmount"],
+          [db.sequelize.fn("SUM", db.sequelize.col("sales.total")), "outstandingAmount"],
         ],
         group: ["Customer.id"],
         having: db.sequelize.literal("outstandingAmount > 0"),

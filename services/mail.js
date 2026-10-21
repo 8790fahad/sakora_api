@@ -8,9 +8,19 @@ const MAILTRAP_PASS = process.env.MAILTRAP_PASS || "";
 const MAILTRAP_INBOX_ID = process.env.MAILTRAP_INBOX_ID || "";
 const MAILTRAP_FROM = process.env.MAILTRAP_FROM || "sakora@example.com";
 const MAILTRAP_FROM_NAME = process.env.MAILTRAP_FROM_NAME || "Sakora";
+const MAILTRAP_ALLOW_SANDBOX =
+  String(process.env.MAILTRAP_ALLOW_SANDBOX || "").toLowerCase() === "true" ||
+  process.env.NODE_ENV !== "production";
 
-const isConfigured = () =>
-  Boolean(MAILTRAP_TOKEN || (MAILTRAP_USER && MAILTRAP_PASS));
+let smtpTransporter = null;
+
+const hasSandboxSmtp = () => Boolean(MAILTRAP_USER && MAILTRAP_PASS);
+const hasApiToken = () => Boolean(MAILTRAP_TOKEN);
+
+const isConfigured = () => hasSandboxSmtp() || hasApiToken();
+
+const preferSandboxSmtp = () =>
+  hasSandboxSmtp() && (MAILTRAP_ALLOW_SANDBOX || !hasApiToken());
 
 const sendViaApi = async ({ to, subject, text, html }) => {
   const sandbox = Boolean(MAILTRAP_INBOX_ID);
@@ -43,13 +53,22 @@ const sendViaApi = async ({ to, subject, text, html }) => {
   return data;
 };
 
-const sendViaSmtp = async ({ to, subject, text, html }) => {
+const getSmtpTransporter = () => {
+  if (smtpTransporter) return smtpTransporter;
   const nodemailer = require("nodemailer");
-  const transporter = nodemailer.createTransport({
+  smtpTransporter = nodemailer.createTransport({
     host: MAILTRAP_HOST,
     port: MAILTRAP_PORT,
     auth: { user: MAILTRAP_USER, pass: MAILTRAP_PASS },
+    pool: true,
+    maxConnections: Number(process.env.SMTP_MAX_CONNECTIONS || 3),
+    maxMessages: Number(process.env.SMTP_MAX_MESSAGES || 100),
   });
+  return smtpTransporter;
+};
+
+const sendViaSmtp = async ({ to, subject, text, html }) => {
+  const transporter = getSmtpTransporter();
   return transporter.sendMail({
     from: `"${MAILTRAP_FROM_NAME}" <${MAILTRAP_FROM}>`,
     to,
@@ -89,9 +108,26 @@ const sendEmail = async ({
   }
 
   try {
-    const info = MAILTRAP_TOKEN
-      ? await sendViaApi({ to, subject, text, html })
-      : await sendViaSmtp({ to, subject, text, html });
+    let info;
+    if (preferSandboxSmtp()) {
+      info = await sendViaSmtp({ to, subject, text, html });
+    } else if (hasApiToken()) {
+      try {
+        info = await sendViaApi({ to, subject, text, html });
+      } catch (apiError) {
+        // Fall back to sandbox SMTP when Sending API token is unauthorized (aa_erp pattern)
+        if (hasSandboxSmtp()) {
+          console.warn(
+            `[mail] API send failed (${apiError.message}); falling back to sandbox SMTP`
+          );
+          info = await sendViaSmtp({ to, subject, text, html });
+        } else {
+          throw apiError;
+        }
+      }
+    } else {
+      info = await sendViaSmtp({ to, subject, text, html });
+    }
 
     if (businessId) {
       await db.MessageLog.create({

@@ -30,13 +30,20 @@ jobs:
             PORT=${PORT:-5100}
             if command -v pm2 >/dev/null 2>&1 && pm2 pid sakora-api 2>/dev/null | grep -Eq '^[1-9]'; then
               pm2 restart sakora-api --update-env
+              if pm2 pid sakora-worker 2>/dev/null | grep -Eq '^[1-9]'; then
+                pm2 restart sakora-worker --update-env
+              fi
             else
               if command -v fuser >/dev/null 2>&1; then
                 fuser -k "${PORT}/tcp" || true
                 sleep 1
               fi
               if command -v pm2 >/dev/null 2>&1; then
-                pm2 start server.js --name sakora-api --cwd /home/dev/sakora_api --update-env
+                if [ -f ecosystem.config.cjs ]; then
+                  pm2 start ecosystem.config.cjs --only sakora-api --update-env
+                else
+                  pm2 start server.js --name sakora-api --cwd /home/dev/sakora_api --update-env
+                fi
               else
                 nohup node server.js >> /home/dev/sakora_api/server.log 2>&1 &
               fi

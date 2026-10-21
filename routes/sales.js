@@ -16,6 +16,11 @@ const {
 } = require("../utils/helpers");
 const { authenticate, authorize } = require("../middleware/auth");
 const db = require("../models");
+const { publishStock } = require("../utils/live");
+const {
+  assertForBusiness,
+  handleTenantError,
+} = require("../utils/tenant");
 
 const router = express.Router();
 
@@ -55,8 +60,11 @@ router.get(
 
       const { offset, limit: pageLimit } = getPagination(page, limit);
 
-      // Build where clause
-      const where = { branchId: req.user.branchId };
+      // Build where clause (always scoped to tenant business + branch)
+      const where = {
+        businessId: req.user.businessId,
+        branchId: req.user.branchId,
+      };
 
       // Date filtering
       if (startDate || endDate) {
@@ -149,6 +157,7 @@ router.get(
       const sale = await db.Sale.findOne({
         where: {
           id,
+          businessId: req.user.businessId,
           branchId: req.user.branchId,
         },
         include: [
@@ -291,7 +300,12 @@ router.post(
       // Create customer if provided but doesn't exist
       let customer = null;
       if (customerId) {
-        customer = await db.Customer.findByPk(customerId);
+        customer = await assertForBusiness(
+          db.Customer,
+          customerId,
+          req.user.businessId,
+          "Customer"
+        );
       } else if (customerName || customerPhone) {
         // Try to find existing customer by phone
         if (customerPhone) {
@@ -320,7 +334,10 @@ router.post(
       // Generate sale number
       const saleCount =
         (await db.Sale.count({
-          where: { branchId: req.user.branchId },
+          where: {
+            businessId: req.user.businessId,
+            branchId: req.user.branchId,
+          },
         })) + 1;
       const saleNumber = generateBusinessNumber(
         req.user.businessId,
@@ -449,6 +466,11 @@ router.post(
 
       await transaction.commit();
 
+      const soldProductIds = (items || []).map((item) => item.productId).filter(Boolean);
+      publishStock(req.user.businessId, soldProductIds).catch((error) => {
+        console.error("Storefront stock publish failed:", error.message);
+      });
+
       // Get complete sale data for response
       const completeSale = await db.Sale.findByPk(sale.id, {
         include: [
@@ -468,6 +490,7 @@ router.post(
         );
     } catch (error) {
       await transaction.rollback();
+      if (handleTenantError(res, error)) return;
       console.error("Sale creation error:", error);
       res
         .status(500)
@@ -495,6 +518,7 @@ router.put(
       const sale = await db.Sale.findOne({
         where: {
           id,
+          businessId: req.user.businessId,
           branchId: req.user.branchId,
         },
       });
@@ -597,6 +621,7 @@ router.get(
 
       const sales = await db.Sale.findAll({
         where: {
+          businessId: req.user.businessId,
           branchId: req.user.branchId,
           status: "completed",
           ...dateFilter,
@@ -687,6 +712,7 @@ router.get(
       const sale = await db.Sale.findOne({
         where: {
           id,
+          businessId: req.user.businessId,
           branchId: req.user.branchId,
         },
         include: [

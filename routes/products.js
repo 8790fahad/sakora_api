@@ -13,6 +13,11 @@ const {
 } = require("../utils/helpers");
 const { authenticate, authorize } = require("../middleware/auth");
 const db = require("../models");
+const {
+  pickAllowed,
+  assertForBusiness,
+  handleTenantError,
+} = require("../utils/tenant");
 
 const router = express.Router();
 
@@ -332,7 +337,25 @@ router.put(
   async (req, res) => {
     try {
       const { id } = req.params;
-      const updates = req.body;
+      const updates = pickAllowed(req.body, [
+        "name",
+        "sku",
+        "barcode",
+        "description",
+        "categoryId",
+        "unit",
+        "costPrice",
+        "sellingPrice",
+        "minSellingPrice",
+        "lowStockThreshold",
+        "trackInventory",
+        "image",
+        "tags",
+        "attributes",
+        "status",
+        "isOnline",
+        "isFeatured",
+      ]);
 
       const product = await db.Product.findOne({
         where: {
@@ -343,6 +366,15 @@ router.put(
 
       if (!product) {
         return res.status(404).json(errorResponse("Product not found"));
+      }
+
+      if (updates.categoryId) {
+        await assertForBusiness(
+          db.Category,
+          updates.categoryId,
+          req.user.businessId,
+          "Category"
+        );
       }
 
       // Check SKU uniqueness if being updated
@@ -400,6 +432,7 @@ router.put(
         })
       );
     } catch (error) {
+      if (handleTenantError(res, error)) return;
       console.error("Product update error:", error);
       res
         .status(500)
@@ -662,13 +695,68 @@ router.delete(
   }
 );
 
-// Bulk import products
+const PRODUCT_UNITS = [
+  "piece",
+  "kg",
+  "g",
+  "liter",
+  "ml",
+  "meter",
+  "cm",
+  "box",
+  "pack",
+  "dozen",
+  "other",
+];
+
+const normalizeUnit = (value) => {
+  const raw = String(value || "piece")
+    .trim()
+    .toLowerCase();
+  if (!raw) return "piece";
+  if (raw === "pcs" || raw === "pc" || raw === "pieces") return "piece";
+  if (raw === "ltr" || raw === "l") return "liter";
+  if (PRODUCT_UNITS.includes(raw)) return raw;
+  return "other";
+};
+
+const resolveCategoryId = async (row, businessId, cache, transaction) => {
+  if (row.categoryId && cache.byId.has(row.categoryId)) {
+    return row.categoryId;
+  }
+
+  const label = String(row.category || row.categoryName || "").trim();
+  if (!label) return null;
+
+  const key = label.toLowerCase();
+  if (cache.byName.has(key)) return cache.byName.get(key);
+
+  if (label.length < 2) {
+    throw new Error("Category name must be at least 2 characters");
+  }
+
+  const category = await db.Category.create(
+    {
+      businessId,
+      name: label.slice(0, 50),
+      color: "#0D9488",
+      status: "active",
+    },
+    { transaction }
+  );
+
+  cache.byName.set(key, category.id);
+  cache.byId.set(category.id, category.id);
+  return category.id;
+};
+
+// Bulk import products (from Excel/CSV mapped rows)
 router.post(
   "/bulk-import",
   [
     authenticate,
     authorize(["owner", "manager"]),
-    body("products").isArray({ min: 1 }),
+    body("products").isArray({ min: 1, max: 500 }),
     handleValidationErrors,
   ],
   async (req, res) => {
@@ -678,33 +766,126 @@ router.post(
       const { products } = req.body;
       const imported = [];
       const errors = [];
+      const usedSkus = new Set();
+      const existingCategories = await db.Category.findAll({
+        where: { businessId: req.user.businessId },
+        transaction,
+      });
+      const categoryCache = {
+        byName: new Map(
+          existingCategories.map((c) => [String(c.name).toLowerCase(), c.id])
+        ),
+        byId: new Map(existingCategories.map((c) => [c.id, c.id])),
+      };
 
       for (let i = 0; i < products.length; i++) {
-        try {
-          const productData = products[i];
+        const row = products[i] || {};
+        const rowNumber = i + 1;
 
-          // Generate SKU if not provided
-          if (!productData.sku) {
-            productData.sku = generateSKU(productData.name);
+        try {
+          const name = String(row.name || "").trim();
+          const costPrice = parseFloat(row.costPrice);
+          const sellingPrice = parseFloat(row.sellingPrice);
+
+          if (name.length < 2) {
+            throw new Error("Name is required (min 2 characters)");
           }
+          if (!Number.isFinite(costPrice) || costPrice < 0) {
+            throw new Error("Valid cost price is required");
+          }
+          if (!Number.isFinite(sellingPrice) || sellingPrice < 0) {
+            throw new Error("Valid selling price is required");
+          }
+
+          const categoryId = await resolveCategoryId(
+            row,
+            req.user.businessId,
+            categoryCache,
+            transaction
+          );
+
+          let sku = String(row.sku || "").trim() || null;
+          if (!sku) {
+            const category = categoryId
+              ? await db.Category.findByPk(categoryId, { transaction })
+              : null;
+            sku = generateSKU(name, category?.name);
+          }
+
+          if (usedSkus.has(sku)) {
+            throw new Error(`Duplicate SKU in file: ${sku}`);
+          }
+
+          const existingSku = await db.Product.findOne({
+            where: { sku, businessId: req.user.businessId },
+            transaction,
+          });
+          if (existingSku) {
+            throw new Error(`SKU already exists: ${sku}`);
+          }
+
+          const barcode = String(row.barcode || "").trim() || null;
+          if (barcode) {
+            const existingBarcode = await db.Product.findOne({
+              where: { barcode, businessId: req.user.businessId },
+              transaction,
+            });
+            if (existingBarcode) {
+              throw new Error(`Barcode already exists: ${barcode}`);
+            }
+          }
+
+          const lowStockThreshold = Number.isFinite(
+            parseInt(row.lowStockThreshold, 10)
+          )
+            ? Math.max(0, parseInt(row.lowStockThreshold, 10))
+            : 10;
+          const openingStock = Number.isFinite(parseFloat(row.openingStock))
+            ? Math.max(0, parseFloat(row.openingStock))
+            : 0;
+          const trackInventory = row.trackInventory !== false;
+          const unit = normalizeUnit(row.unit);
+          const expiryDate = row.expiryDate
+            ? String(row.expiryDate).slice(0, 10)
+            : null;
 
           const product = await db.Product.create(
             {
               businessId: req.user.businessId,
-              ...productData,
+              name,
+              sku,
+              barcode,
+              description: row.description
+                ? String(row.description).trim()
+                : null,
+              categoryId,
+              unit,
+              costPrice,
+              sellingPrice,
+              minSellingPrice:
+                row.minSellingPrice != null && row.minSellingPrice !== ""
+                  ? parseFloat(row.minSellingPrice)
+                  : null,
+              lowStockThreshold,
+              expiryDate: expiryDate || null,
+              trackInventory,
+              isOnline: row.isOnline !== false,
+              status: "active",
             },
             { transaction }
           );
 
-          // Create inventory if tracking
-          if (productData.trackInventory !== false) {
+          usedSkus.add(sku);
+
+          if (trackInventory) {
             await db.Inventory.create(
               {
                 productId: product.id,
                 branchId: req.user.branchId,
-                quantity: productData.openingStock || 0,
-                reorderPoint: productData.lowStockThreshold || 10,
-                averageCostPrice: productData.costPrice || 0,
+                quantity: openingStock,
+                reorderPoint: lowStockThreshold,
+                averageCostPrice: costPrice,
+                lastStockUpdate: new Date(),
               },
               { transaction }
             );
@@ -713,26 +894,36 @@ router.post(
           imported.push(product);
         } catch (error) {
           errors.push({
-            row: i + 1,
-            data: products[i],
+            row: rowNumber,
+            name: row.name || null,
             error: error.message,
           });
         }
       }
 
-      if (errors.length === 0) {
-        await transaction.commit();
-        res.json(
-          successResponse(`Successfully imported ${imported.length} products`, {
-            imported,
+      if (errors.length > 0) {
+        await transaction.rollback();
+        const first = errors[0];
+        const summary = `Row ${first.row}${
+          first.name ? ` (${first.name})` : ""
+        }: ${first.error}${
+          errors.length > 1 ? ` (+${errors.length - 1} more)` : ""
+        }`;
+        return res.status(400).json(
+          errorResponse(summary, {
+            errors,
+            importedCount: 0,
           })
         );
-      } else {
-        await transaction.rollback();
-        res
-          .status(400)
-          .json(errorResponse("Import failed with errors", { errors }));
       }
+
+      await transaction.commit();
+      res.json(
+        successResponse(`Successfully imported ${imported.length} products`, {
+          importedCount: imported.length,
+          imported,
+        })
+      );
     } catch (error) {
       await transaction.rollback();
       console.error("Bulk import error:", error);

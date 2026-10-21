@@ -102,7 +102,11 @@ const validationRules = {
     body('lowStockThreshold')
       .optional()
       .isInt({ min: 0 })
-      .withMessage('Low stock threshold must be a non-negative integer')
+      .withMessage('Reorder level must be a non-negative integer'),
+    body('expiryDate')
+      .optional({ nullable: true, checkFalsy: true })
+      .isISO8601()
+      .withMessage('Expiry date must be a valid date')
   ],
 
   // Sale creation
@@ -143,7 +147,7 @@ const validationRules = {
       .isFloat({ min: 0 })
       .withMessage('Unit cost must be a positive number'),
     body('supplierId')
-      .optional()
+      .optional({ values: 'falsy' })
       .isUUID()
       .withMessage('Supplier ID must be a valid UUID'),
     body('paymentMethod')

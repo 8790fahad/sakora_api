@@ -4,8 +4,19 @@ const { validationRules, handleValidationErrors } = require("../utils/validation
 const { errorResponse, successResponse } = require("../utils/helpers");
 const { authenticate } = require("../middleware/auth");
 const db = require("../models");
+const {
+  assertBranchInBusiness,
+  handleTenantError,
+} = require("../utils/tenant");
 
 const router = express.Router();
+
+async function resolveReportBranchId(req) {
+  const { branchId } = req.query;
+  if (!branchId) return null;
+  await assertBranchInBusiness(branchId, req.user.businessId);
+  return branchId;
+}
 
 // Sales Report
 router.get(
@@ -20,7 +31,8 @@ router.get(
   ],
   async (req, res) => {
     try {
-      const { period = "month", dateFrom, dateTo, branchId } = req.query;
+      const { period = "month", dateFrom, dateTo } = req.query;
+      const branchId = await resolveReportBranchId(req);
 
       // Calculate date range
       let startDate, endDate;
@@ -68,7 +80,6 @@ router.get(
       const [
         totalSales,
         totalRevenue,
-        averageSaleValue,
         salesByPaymentMethod,
         salesByCustomer,
         topProducts,
@@ -129,7 +140,8 @@ router.get(
           attributes: [
             "productId",
             [db.sequelize.fn("SUM", db.sequelize.col("quantity")), "totalQuantity"],
-            [db.sequelize.fn("SUM", db.sequelize.col("SaleItem.totalPrice")), "totalRevenue"],
+            // underscored: true → DB column is total_price
+            [db.sequelize.fn("SUM", db.sequelize.col("SaleItem.total_price")), "totalRevenue"],
             [db.sequelize.fn("COUNT", db.sequelize.col("SaleItem.id")), "salesCount"],
           ],
           group: ["productId", "product.id"],
@@ -187,6 +199,7 @@ router.get(
 
       res.json(successResponse("Sales report generated successfully", { report: summary }));
     } catch (error) {
+      if (handleTenantError(res, error)) return;
       console.error("Sales report error:", error);
       res.status(500).json(errorResponse("Failed to generate sales report", error.message));
     }
@@ -254,7 +267,6 @@ router.get(
       const [
         totalPurchases,
         totalSpend,
-        averagePurchaseValue,
         purchasesByPaymentMethod,
         purchasesBySupplier,
         topPurchasedProducts,
@@ -315,8 +327,9 @@ router.get(
           attributes: [
             "productId",
             [db.sequelize.fn("SUM", db.sequelize.col("quantity")), "totalQuantity"],
-            [db.sequelize.fn("SUM", db.sequelize.col("totalCost")), "totalCost"],
-            [db.sequelize.fn("AVG", db.sequelize.col("unitCost")), "avgUnitCost"],
+            // underscored: true → DB columns are total_cost / unit_cost
+            [db.sequelize.fn("SUM", db.sequelize.col("total_cost")), "totalCost"],
+            [db.sequelize.fn("AVG", db.sequelize.col("unit_cost")), "avgUnitCost"],
           ],
           group: ["productId", "product.id"],
           order: [[db.sequelize.literal("totalCost"), "DESC"]],
@@ -432,7 +445,6 @@ router.get(
       const [
         totalExpenses,
         totalAmount,
-        averageExpense,
         expensesByCategory,
         expensesByPaymentMethod,
         topExpenses,
@@ -455,12 +467,12 @@ router.get(
             },
           ],
           attributes: [
-            "expenseCategoryId",
-            [db.sequelize.fn("COUNT", db.sequelize.col("id")), "count"],
-            [db.sequelize.fn("SUM", db.sequelize.col("amount")), "amount"],
-            [db.sequelize.fn("AVG", db.sequelize.col("amount")), "avgAmount"],
+            "categoryId",
+            [db.sequelize.fn("COUNT", db.sequelize.col("Expense.id")), "count"],
+            [db.sequelize.fn("SUM", db.sequelize.col("Expense.amount")), "amount"],
+            [db.sequelize.fn("AVG", db.sequelize.col("Expense.amount")), "avgAmount"],
           ],
-          group: ["expenseCategoryId", "category.id"],
+          group: ["categoryId", "category.id"],
           order: [[db.sequelize.literal("amount"), "DESC"]],
         }),
 
@@ -511,7 +523,7 @@ router.get(
         totalAmount: totalAmount || 0,
         averageExpense: totalExpenses > 0 ? (totalAmount || 0) / totalExpenses : 0,
         expensesByCategory: expensesByCategory.map((item) => ({
-          categoryId: item.expenseCategoryId,
+          categoryId: item.categoryId,
           categoryName: item.category?.name || "Uncategorized",
           categoryColor: item.category?.color || "#6B7280",
           count: parseInt(item.get("count")),
@@ -651,15 +663,16 @@ router.get(
 // Inventory Valuation Report
 router.get("/inventory", authenticate, async (req, res) => {
   try {
-    const { branchId } = req.query;
+    const branchId = await resolveReportBranchId(req);
 
-    const whereClause = {
-      businessId: req.user.businessId,
+    // Inventory has no businessId — scope through Product.businessId
+    const whereClause = branchId ? { branchId } : {};
+    const productScope = {
+      model: db.Product,
+      as: "product",
+      required: true,
+      where: { businessId: req.user.businessId },
     };
-
-    if (branchId) {
-      whereClause.branchId = branchId;
-    }
 
     // Get inventory summary
     const [inventoryItems, lowStockItems, totalStockValue, categoryBreakdown] = await Promise.all([
@@ -668,8 +681,7 @@ router.get("/inventory", authenticate, async (req, res) => {
         where: whereClause,
         include: [
           {
-            model: db.Product,
-            as: "product",
+            ...productScope,
             attributes: ["id", "name", "sku", "sellingPrice"],
             include: [
               {
@@ -687,12 +699,12 @@ router.get("/inventory", authenticate, async (req, res) => {
       db.Inventory.findAll({
         where: {
           ...whereClause,
-          quantity: { [db.Sequelize.Op.lte]: db.sequelize.col("reorderPoint") },
+          // underscored: true → DB column is reorder_point
+          quantity: { [db.Sequelize.Op.lte]: db.sequelize.col("reorder_point") },
         },
         include: [
           {
-            model: db.Product,
-            as: "product",
+            ...productScope,
             attributes: ["id", "name", "sku"],
           },
         ],
@@ -701,15 +713,17 @@ router.get("/inventory", authenticate, async (req, res) => {
       // Total stock value
       db.Inventory.findAll({
         where: whereClause,
+        include: [{ ...productScope, attributes: [] }],
         attributes: [
           [
             db.sequelize.fn(
               "SUM",
-              db.sequelize.literal("quantity * averageCostPrice")
+              db.sequelize.literal("`Inventory`.`quantity` * `Inventory`.`average_cost_price`")
             ),
             "totalValue",
           ],
         ],
+        raw: true,
       }),
 
       // Stock value by category
@@ -717,8 +731,7 @@ router.get("/inventory", authenticate, async (req, res) => {
         where: whereClause,
         include: [
           {
-            model: db.Product,
-            as: "product",
+            ...productScope,
             include: [
               {
                 model: db.Category,
@@ -732,12 +745,12 @@ router.get("/inventory", authenticate, async (req, res) => {
           [
             db.sequelize.fn(
               "SUM",
-              db.sequelize.literal("quantity * averageCostPrice")
+              db.sequelize.literal("`Inventory`.`quantity` * `Inventory`.`average_cost_price`")
             ),
             "categoryValue",
           ],
           [
-            db.sequelize.fn("SUM", db.sequelize.col("quantity")),
+            db.sequelize.fn("SUM", db.sequelize.col("Inventory.quantity")),
             "totalQuantity",
           ],
         ],
@@ -745,7 +758,10 @@ router.get("/inventory", authenticate, async (req, res) => {
       }),
     ]);
 
-    const totalValue = totalStockValue[0]?.get("totalValue") || 0;
+    const totalValue =
+      totalStockValue[0]?.totalValue ||
+      totalStockValue[0]?.get?.("totalValue") ||
+      0;
 
     const summary = {
       totalItems: inventoryItems.length,
@@ -783,6 +799,7 @@ router.get("/inventory", authenticate, async (req, res) => {
 
     res.json(successResponse("Inventory report generated successfully", { report: summary }));
   } catch (error) {
+    if (handleTenantError(res, error)) return;
     console.error("Inventory report error:", error);
     res.status(500).json(errorResponse("Failed to generate inventory report", error.message));
   }

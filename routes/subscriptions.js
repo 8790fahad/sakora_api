@@ -133,7 +133,22 @@ router.post(
         return res.status(404).json(errorResponse("Payment not found"));
       }
 
-      const mockComplete = Boolean(req.body.mock) && payment.metadata?.mock;
+      const meta =
+        typeof payment.metadata === "string"
+          ? (() => {
+              try {
+                return JSON.parse(payment.metadata);
+              } catch {
+                return {};
+              }
+            })()
+          : payment.metadata || {};
+      const wantMock =
+        req.body.mock === true ||
+        req.body.mock === "true" ||
+        req.body.mock === 1 ||
+        req.body.mock === "1";
+      const mockComplete = wantMock && Boolean(meta.mock);
       const verified = mockComplete
         ? { transaction_status: "Success", mock: true }
         : await squad.verifyPayment(payment.providerReference);

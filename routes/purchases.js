@@ -15,6 +15,11 @@ const {
 } = require("../utils/helpers");
 const { authenticate, authorize } = require("../middleware/auth");
 const db = require("../models");
+const {
+  assertForBusiness,
+  assertProductsInBusiness,
+  handleTenantError,
+} = require("../utils/tenant");
 
 const router = express.Router();
 
@@ -203,8 +208,8 @@ router.post(
   [
     authenticate,
     authorize(["owner", "manager", "staff"]),
-    body("supplierId").optional().isUUID(),
-    body("supplierName").optional().trim().isLength({ min: 2, max: 100 }),
+    body("supplierId").optional({ values: "falsy" }).isUUID(),
+    body("supplierName").optional({ values: "falsy" }).trim().isLength({ min: 2, max: 100 }),
     body("date").isISO8601(),
     body("reference").optional().trim().isLength({ max: 50 }),
     body("paymentMethod").isIn(["cash", "bank_transfer", "cheque", "credit"]),
@@ -239,9 +244,16 @@ router.post(
         notes,
       } = req.body;
 
-      // Handle supplier creation if new
+      // Handle supplier creation if new — always tenant-scoped
       let finalSupplierId = supplierId;
-      if (!supplierId && supplierName) {
+      if (supplierId) {
+        await assertForBusiness(
+          db.Supplier,
+          supplierId,
+          req.user.businessId,
+          "Supplier"
+        );
+      } else if (supplierName) {
         const newSupplier = await db.Supplier.create(
           {
             businessId: req.user.businessId,
@@ -251,6 +263,12 @@ router.post(
         );
         finalSupplierId = newSupplier.id;
       }
+
+      await assertProductsInBusiness(
+        items.map((item) => item.productId),
+        req.user.businessId,
+        { status: "active" }
+      );
 
       const subtotal = items.reduce(
         (sum, item) => sum + parseFloat(item.quantity) * parseFloat(item.unitCost),
@@ -420,6 +438,7 @@ router.post(
       );
     } catch (error) {
       await transaction.rollback();
+      if (handleTenantError(res, error)) return;
       console.error("Purchase creation error:", error);
       res
         .status(500)

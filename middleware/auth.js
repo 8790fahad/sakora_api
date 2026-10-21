@@ -1,10 +1,54 @@
 const jwt = require("jsonwebtoken");
 const db = require("../models");
 const { hasPermission } = require("../utils/permissions");
+const { getJwtSecret } = require("../config/secrets");
+const {
+  getCachedSession,
+  setCachedSession,
+  invalidateSession,
+} = require("../utils/sessionCache");
+const { ensureUserBranchBelongsToBusiness } = require("../utils/tenant");
 
-// JWT Secret - use environment variable or fallback for development
-const JWT_SECRET =
-  process.env.JWT_SECRET || "sakora-dev-secret-key-change-in-production";
+const JWT_SECRET = getJwtSecret();
+const SESSION_ACTIVITY_TTL_MS = Number(
+  process.env.SESSION_ACTIVITY_TTL_MS || 60_000
+);
+
+async function loadSession(token, userId) {
+  return db.UserSession.findOne({
+    where: {
+      token,
+      userId,
+      isActive: true,
+      expiresAt: {
+        [db.Sequelize.Op.gt]: new Date(),
+      },
+    },
+    include: [
+      {
+        model: db.User,
+        as: "user",
+        include: [
+          { model: db.Business, as: "business" },
+          { model: db.Branch, as: "branch" },
+        ],
+      },
+    ],
+  });
+}
+
+function touchLastActivity(session) {
+  const last = session.lastActivity
+    ? new Date(session.lastActivity).getTime()
+    : 0;
+  if (Date.now() - last < SESSION_ACTIVITY_TTL_MS) return;
+
+  session.lastActivity = new Date();
+  // Fire-and-forget so auth path doesn't hold a write lock/connection
+  session
+    .update({ lastActivity: session.lastActivity })
+    .catch((error) => console.error("lastActivity update failed:", error.message));
+}
 
 // Verify JWT token and set user in request
 const authenticate = async (req, res, next) => {
@@ -22,27 +66,21 @@ const authenticate = async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    // Check if session exists and is active
-    const session = await db.UserSession.findOne({
-      where: {
-        token,
-        userId: decoded.userId,
-        isActive: true,
-        expiresAt: {
-          [db.Sequelize.Op.gt]: new Date(),
-        },
-      },
-      include: [
-        {
-          model: db.User,
-          as: "user",
-          include: [
-            { model: db.Business, as: "business" },
-            { model: db.Branch, as: "branch" },
-          ],
-        },
-      ],
-    });
+    let session = getCachedSession(token);
+    if (session) {
+      if (
+        !session.isActive ||
+        new Date(session.expiresAt).getTime() <= Date.now()
+      ) {
+        invalidateSession(token);
+        session = null;
+      }
+    }
+
+    if (!session) {
+      session = await loadSession(token, decoded.userId);
+      if (session) setCachedSession(token, session);
+    }
 
     if (!session) {
       return res.status(401).json({
@@ -51,11 +89,24 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    // Update last activity
-    await session.update({ lastActivity: new Date() });
+    touchLastActivity(session);
+
+    // Enforce tenant integrity: branch must belong to the user's business
+    try {
+      await ensureUserBranchBelongsToBusiness(session.user);
+    } catch (tenantError) {
+      return res.status(tenantError.statusCode || 403).json({
+        success: false,
+        message: tenantError.message || "Invalid tenant context.",
+      });
+    }
 
     // Set user in request
     req.user = session.user;
+    req.tenant = {
+      businessId: session.user.businessId,
+      branchId: session.user.branchId,
+    };
     req.session = session;
 
     next();
@@ -164,4 +215,5 @@ module.exports = {
   authorize,
   requirePermission,
   optionalAuth,
+  invalidateSession,
 };

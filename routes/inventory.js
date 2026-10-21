@@ -13,6 +13,10 @@ const {
 } = require("../utils/helpers");
 const { authenticate, authorize } = require("../middleware/auth");
 const db = require("../models");
+const {
+  assertForBusiness,
+  handleTenantError,
+} = require("../utils/tenant");
 
 const router = express.Router();
 
@@ -565,6 +569,13 @@ router.post(
         return res.status(400).json(errorResponse("Invalid branch selection"));
       }
 
+      await assertForBusiness(
+        db.Product,
+        productId,
+        req.user.businessId,
+        "Product"
+      );
+
       // Get source inventory
       const sourceInventory = await db.Inventory.findOne({
         where: {
@@ -638,6 +649,7 @@ router.post(
       );
     } catch (error) {
       await transaction.rollback();
+      if (handleTenantError(res, error)) return;
       console.error("Stock transfer error:", error);
       res
         .status(500)

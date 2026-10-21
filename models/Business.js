@@ -83,8 +83,19 @@ module.exports = (sequelize, DataTypes) => {
       }
     },
     logo: {
-      type: DataTypes.STRING,
+      // data URL (base64) or remote/path URL — TEXT to match FlowBooks-style logos
+      type: DataTypes.TEXT("long"),
       allowNull: true
+    },
+    primaryColor: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: "#0D9488",
+    },
+    secondaryColor: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      defaultValue: "#134E4A",
     },
     taxEnabled: {
       type: DataTypes.BOOLEAN,
@@ -119,12 +130,53 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: {
         lowStockAlert: true,
         lowStockThreshold: 10,
+        expiryAlert: true,
+        expiryAlertDays: 30,
         autoReceiptGeneration: true,
         defaultPaymentMethod: 'cash',
         decimalPlaces: 2,
         dateFormat: 'DD/MM/YYYY',
         timeFormat: '12h'
-      }
+      },
+      get() {
+        const raw = this.getDataValue('settings');
+        if (!raw) return {};
+        if (typeof raw === 'object' && !Array.isArray(raw)) {
+          // Guard against corrupted string-spread objects ({"0":"{", "1":"\""...})
+          const keys = Object.keys(raw);
+          if (keys.length && keys.every((k) => /^\d+$/.test(k))) {
+            try {
+              return JSON.parse(keys.sort((a, b) => a - b).map((k) => raw[k]).join(''));
+            } catch {
+              return {};
+            }
+          }
+          return raw;
+        }
+        if (typeof raw === 'string') {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return {};
+          }
+        }
+        return {};
+      },
+      set(value) {
+        if (value == null) {
+          this.setDataValue('settings', {});
+          return;
+        }
+        if (typeof value === 'string') {
+          try {
+            this.setDataValue('settings', JSON.parse(value));
+          } catch {
+            this.setDataValue('settings', {});
+          }
+          return;
+        }
+        this.setDataValue('settings', value);
+      },
     },
     taxName: {
       type: DataTypes.STRING,
@@ -143,6 +195,11 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       defaultValue: false
     },
+    sellingMode: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: "online",
+    },
     storefrontSettings: {
       type: DataTypes.JSON,
       defaultValue: {
@@ -160,10 +217,34 @@ module.exports = (sequelize, DataTypes) => {
           return {};
         }
       }
-    }
+    },
+    referralCode: {
+      type: DataTypes.STRING(16),
+      allowNull: true,
+      unique: true,
+    },
+    referredByBusinessId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+    },
   });
 
   Business.associate = function(models) {
+    Business.belongsTo(models.Business, {
+      foreignKey: 'referredByBusinessId',
+      as: 'referrer',
+    });
+
+    Business.hasMany(models.Business, {
+      foreignKey: 'referredByBusinessId',
+      as: 'referrals',
+    });
+
+    Business.hasMany(models.ReferralCommission, {
+      foreignKey: 'referrerBusinessId',
+      as: 'referralCommissions',
+    });
+
     // Business has many users
     Business.hasMany(models.User, {
       foreignKey: 'businessId',

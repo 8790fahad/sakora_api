@@ -150,7 +150,7 @@ router.post(
         );
       }
 
-      const invoiceUrl = `${squad.FRONTEND_URL}/shop/${
+      const invoiceUrl = `${squad.STOREFRONT_URL}/${
         business.storefrontSlug || "store"
       }/order/${order.orderNumber}`;
 

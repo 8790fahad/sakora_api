@@ -30,6 +30,10 @@ db.Subscription = require('./Subscription')(sequelize, Sequelize.DataTypes);
 db.Notification = require('./Notification')(sequelize, Sequelize.DataTypes);
 db.MessageLog = require('./MessageLog')(sequelize, Sequelize.DataTypes);
 db.VatPayment = require('./VatPayment')(sequelize, Sequelize.DataTypes);
+db.NewsletterSubscriber = require('./NewsletterSubscriber')(sequelize, Sequelize.DataTypes);
+db.SupportTicket = require('./SupportTicket')(sequelize, Sequelize.DataTypes);
+db.SupportMessage = require('./SupportMessage')(sequelize, Sequelize.DataTypes);
+db.ReferralCommission = require('./ReferralCommission')(sequelize, Sequelize.DataTypes);
 
 // Define associations
 Object.keys(db).forEach(modelName => {

@@ -48,6 +48,7 @@ const ROLE_PERMISSIONS = {
     "suppliers.view",
     "reports.view",
     "notifications.view",
+    "settings.view",
   ],
 };
 

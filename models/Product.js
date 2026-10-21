@@ -67,6 +67,10 @@ module.exports = (sequelize, DataTypes) => {
         min: 0
       }
     },
+    expiryDate: {
+      type: DataTypes.DATEONLY,
+      allowNull: true
+    },
     trackInventory: {
       type: DataTypes.BOOLEAN,
       defaultValue: true
