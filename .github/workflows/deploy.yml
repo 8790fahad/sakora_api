@@ -24,7 +24,12 @@ jobs:
           script: |
             set -e
             cd /home/dev/sakora_api
-            git pull --no-rebase origin main
+            # Discard local VPS edits / half-merges; keep .env (gitignored).
+            git merge --abort 2>/dev/null || true
+            git rebase --abort 2>/dev/null || true
+            git fetch origin main
+            git reset --hard origin/main
+            git clean -fd -e .env -e tmp -e node_modules -e server.log
             npm ci --omit=dev
             PORT=$(awk -F= '/^PORT=/{print $2}' .env | tr -d ' \r' | tail -1)
             PORT=${PORT:-5100}
