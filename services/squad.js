@@ -5,7 +5,8 @@ const SQUAD_PUBLIC_KEY = process.env.SQUAD_PUBLIC_KEY || "";
 const SQUAD_BASE_URL =
   process.env.SQUAD_BASE_URL || "https://sandbox-api-d.squadco.com";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
-const STOREFRONT_URL = process.env.STOREFRONT_URL || "http://localhost:5175";
+/** Customer shops + order tracking live on the marketing site */
+const STOREFRONT_URL = process.env.STOREFRONT_URL || "http://localhost:5174";
 
 const isConfigured = () => Boolean(SQUAD_SECRET_KEY);
 

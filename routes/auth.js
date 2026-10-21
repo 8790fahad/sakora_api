@@ -567,11 +567,12 @@ router.put('/profile', [
       return res.status(404).json(errorResponse('User not found'));
     }
 
-    await user.update({
-      firstName,
-      lastName,
-      phone
-    });
+    const updates = {};
+    if (firstName !== undefined) updates.firstName = firstName;
+    if (lastName !== undefined) updates.lastName = lastName;
+    if (phone !== undefined) updates.phone = phone;
+
+    await user.update(updates);
 
     const updatedUser = await db.User.findByPk(user.id, {
       include: [
@@ -580,7 +581,7 @@ router.put('/profile', [
       ]
     });
 
-    res.json(successResponse('Profile updated', { user: updatedUser }));
+    res.json(successResponse('Profile updated', { user: serializeUser(updatedUser) }));
 
   } catch (error) {
     console.error('Profile update error:', error);

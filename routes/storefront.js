@@ -314,7 +314,7 @@ router.post(
         );
       }
 
-      const callbackUrl = `${squad.STOREFRONT_URL}/${business.storefrontSlug}/order/${order.orderNumber}`;
+      const callbackUrl = `${squad.STOREFRONT_URL}/${business.storefrontSlug}/${order.orderNumber}`;
       const initiated = await squad.initiatePayment({
         email: customerEmail,
         amount: total,

@@ -7,6 +7,7 @@ const parseOrigins = (value) =>
 const shopOrigins = [
   "https://sakora.shop",
   "https://www.sakora.shop",
+  "https://app.sakora.shop",
   "https://nexifour.ng",
   "https://www.nexifour.ng",
 ];

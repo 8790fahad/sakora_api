@@ -152,7 +152,7 @@ router.post(
 
       const invoiceUrl = `${squad.STOREFRONT_URL}/${
         business.storefrontSlug || "store"
-      }/order/${order.orderNumber}`;
+      }/${order.orderNumber}`;
 
       await t.commit();
       await notifyOrderPlaced(order, business);
