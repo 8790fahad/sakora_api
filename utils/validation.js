@@ -1,5 +1,14 @@
 const { body, param, query, validationResult } = require('express-validator');
 
+function normalizePhone(value) {
+  if (value == null) return value;
+  const compact = String(value).trim().replace(/[\s()-]/g, '');
+  if (!compact) return '';
+  if (/^0\d{10}$/.test(compact)) return `+234${compact.slice(1)}`;
+  if (/^234\d{10}$/.test(compact)) return `+${compact}`;
+  return compact;
+}
+
 // Handle validation errors
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
@@ -38,9 +47,32 @@ const validationRules = {
       .isLength({ min: 2, max: 50 })
       .withMessage('Last name must be between 2 and 50 characters'),
     body('phone')
-      .optional()
-      .isMobilePhone()
+      .optional({ values: 'falsy' })
+      .customSanitizer(normalizePhone)
+      .isMobilePhone('any')
       .withMessage('Please provide a valid phone number'),
+    body('phones').optional().isArray({ max: 30 }),
+    body('phones.*').optional().trim().isLength({ max: 40 }),
+    body('description').optional({ values: 'falsy' }).trim().isLength({ max: 1000 }),
+    body('registrationNumber')
+      .optional({ values: 'falsy' })
+      .trim()
+      .isLength({ max: 50 }),
+    body('logo')
+      .optional({ nullable: true, values: 'falsy' })
+      .custom((value) => {
+        if (value == null || value === '') return true;
+        if (typeof value !== 'string') throw new Error('Logo must be an image');
+        if (/^https?:\/\//i.test(value)) {
+          if (value.length > 2000) throw new Error('Logo link is too long');
+          return true;
+        }
+        if (value.length > 900000) throw new Error('Logo is too large');
+        if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(value)) {
+          throw new Error('Logo must be an image');
+        }
+        return true;
+      }),
     body('acceptTerms')
       .custom((value) => value === true || value === 'true')
       .withMessage('You must agree to the General Terms of Use, Merchant Terms of Use and General Privacy Policy'),
@@ -97,8 +129,9 @@ const validationRules = {
       .withMessage('Selling price must be a positive number'),
     body('unit')
       .optional()
-      .isIn(['piece', 'kg', 'g', 'liter', 'ml', 'meter', 'cm', 'box', 'pack', 'dozen', 'other'])
-      .withMessage('Invalid unit type'),
+      .trim()
+      .isLength({ min: 1, max: 30 })
+      .withMessage('Unit must be 30 characters or less'),
     body('lowStockThreshold')
       .optional()
       .isInt({ min: 0 })

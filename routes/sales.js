@@ -244,6 +244,7 @@ router.post(
         customerPhone,
         customerEmail,
         paymentMethod = "cash",
+        bankAccountId = null,
         paidAmount,
         discountAmount = 0,
         taxRate = 0,
@@ -347,7 +348,18 @@ router.post(
 
       const business = await db.Business.findByPk(req.user.businessId);
       const appliedTaxRate = resolveTaxRate(business, taxRate);
-      const totals = calculateTransactionTotals(items, appliedTaxRate);
+      const totals = calculateTransactionTotals(
+        items.map((item) => {
+          const product = products.find((entry) => entry.id === item.productId);
+          const vatable =
+            business.taxEnabled && product?.vatStatus === "Vatable";
+          return {
+            ...item,
+            vatRate: vatable ? appliedTaxRate : 0,
+          };
+        }),
+        0
+      );
       const finalTotal = totals.total - parseFloat(discountAmount);
 
       // Create sale
@@ -367,6 +379,10 @@ router.post(
           paidAmount: parseFloat(paidAmount),
           changeAmount: Math.max(0, parseFloat(paidAmount) - finalTotal),
           paymentMethod,
+          bankAccountId:
+            paymentMethod === "bank" && bankAccountId
+              ? String(bankAccountId).slice(0, 64)
+              : null,
           paymentStatus:
             parseFloat(paidAmount) >= finalTotal
               ? "paid"

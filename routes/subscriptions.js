@@ -6,9 +6,26 @@ const squad = require("../services/squad");
 const { activateSubscription } = require("../services/orders");
 const { notifySubscription } = require("../services/notify");
 const { errorResponse, successResponse } = require("../utils/helpers");
+const { isOriginAllowed } = require("../utils/origins");
 const { PLANS, planAmount } = require("../utils/plans");
 
 const router = express.Router();
+
+const billingReturnUrl = (requested, reference) => {
+  const fallback = `${squad.FRONTEND_URL}/billing?ref=${encodeURIComponent(reference)}`;
+  if (!requested) return fallback;
+  try {
+    const url = new URL(String(requested));
+    if (!isOriginAllowed(url.origin) || url.pathname !== "/billing") {
+      return fallback;
+    }
+    url.searchParams.set("ref", reference);
+    url.hash = "";
+    return url.toString();
+  } catch (error) {
+    return fallback;
+  }
+};
 
 router.get("/plans", authenticate, async (req, res) => {
   const business = await db.Business.findByPk(req.user.businessId);
@@ -48,6 +65,12 @@ router.post(
       }
 
       const business = await db.Business.findByPk(req.user.businessId);
+      const email = req.user.email || business.email;
+      if (!email) {
+        return res
+          .status(400)
+          .json(errorResponse("Add an email on your profile before paying"));
+      }
       const reference = `SUB${business.id.slice(-6).toUpperCase()}${Date.now()}`;
 
       const subscription = await db.Subscription.create({
@@ -60,9 +83,9 @@ router.post(
         metadata: { interval },
       });
 
-      const callbackUrl = `${squad.FRONTEND_URL}/billing?ref=${reference}`;
+      const callbackUrl = billingReturnUrl(req.body.callbackUrl, reference);
       const initiated = await squad.initiatePayment({
-        email: req.user.email,
+        email,
         amount,
         currency: "NGN",
         customerName: `${req.user.firstName} ${req.user.lastName}`,
@@ -100,7 +123,7 @@ router.post(
             mock: Boolean(initiated.mock),
             publicKey: initiated.public_key,
             amount,
-            email: req.user.email,
+            email,
             customerName: `${req.user.firstName} ${req.user.lastName}`,
             currency: "NGN",
           },
@@ -108,9 +131,17 @@ router.post(
       );
     } catch (error) {
       console.error("Subscription checkout error:", error);
+      const providerFailed = Boolean(error.status);
       res
-        .status(500)
-        .json(errorResponse("Failed to start subscription payment", error.message));
+        .status(providerFailed ? 400 : 500)
+        .json(
+          errorResponse(
+            providerFailed
+              ? error.message
+              : "Failed to start subscription payment",
+            providerFailed ? null : error.message
+          )
+        );
     }
   }
 );
@@ -131,6 +162,17 @@ router.post(
       });
       if (!payment) {
         return res.status(404).json(errorResponse("Payment not found"));
+      }
+
+      if (payment.status === "success") {
+        const business = await db.Business.findByPk(req.user.businessId);
+        return res.json(
+          successResponse("Subscription already active", {
+            plan: business.subscriptionPlan,
+            expiry: business.subscriptionExpiry,
+            alreadyActive: true,
+          })
+        );
       }
 
       const meta =
@@ -156,9 +198,26 @@ router.post(
       if (!squad.isSuccessful(verified.transaction_status)) {
         return res.json(
           successResponse("Payment still pending", {
-            transactionStatus: verified.transaction_status,
+            pending: true,
+            transactionStatus: verified.transaction_status || "pending",
           })
         );
+      }
+
+      const paid = Number(
+        verified.transaction_amount ?? verified.amount ?? verified.transactionAmount
+      );
+      const expectedNaira = parseFloat(payment.amount);
+      const expectedKobo = Math.round(expectedNaira * 100);
+      const amountMatches =
+        !Number.isFinite(paid) ||
+        paid <= 0 ||
+        paid + 1 >= expectedKobo ||
+        Math.abs(paid - expectedNaira) < 1;
+      if (!amountMatches) {
+        return res
+          .status(400)
+          .json(errorResponse("Paid amount does not match this plan"));
       }
 
       const subscription = await db.Subscription.findByPk(payment.referenceId);

@@ -88,6 +88,7 @@ router.post(
       } = req.body;
 
       let subtotal = 0;
+      let taxableSubtotal = 0;
       const lines = [];
       for (const item of items) {
         const product = await db.Product.findOne({
@@ -102,11 +103,12 @@ router.post(
         const unitPrice = parseFloat(item.unitPrice || product.sellingPrice);
         const totalPrice = quantity * unitPrice;
         subtotal += totalPrice;
+        if (product.vatStatus === "Vatable") taxableSubtotal += totalPrice;
         lines.push({ product, quantity, unitPrice, totalPrice });
       }
 
       const taxRate = business.taxEnabled ? parseFloat(business.taxRate || 0) : 0;
-      const taxAmount = (subtotal * taxRate) / 100;
+      const taxAmount = (taxableSubtotal * taxRate) / 100;
       const total = subtotal + taxAmount;
       const count = await db.Order.count({
         where: { businessId: business.id },

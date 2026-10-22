@@ -1,4 +1,5 @@
 const express = require("express");
+const multer = require("multer");
 const { body, query } = require("express-validator");
 const {
   validationRules,
@@ -12,6 +13,7 @@ const {
   getPagingData,
 } = require("../utils/helpers");
 const { authenticate, authorize } = require("../middleware/auth");
+const { uploadBuffer } = require("../config/cloudinary");
 const db = require("../models");
 const {
   pickAllowed,
@@ -20,6 +22,96 @@ const {
 } = require("../utils/tenant");
 
 const router = express.Router();
+
+const VAT_STATUSES = ["Vatable", "Non-Vatable", "Zero-rated", "Exempted"];
+
+const normalizeVatStatus = (value) => {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+  if (!raw) return "Non-Vatable";
+  if (raw === "vatable" || raw === "taxable") return "Vatable";
+  if (
+    raw === "non vatable" ||
+    raw === "non taxable" ||
+    raw === "nontaxable" ||
+    raw === "not taxable"
+  ) {
+    return "Non-Vatable";
+  }
+  if (raw === "zero rated" || raw === "zero rate" || raw === "0 rated") {
+    return "Zero-rated";
+  }
+  if (
+    raw === "exempted" ||
+    raw === "exempt" ||
+    raw === "excepted" ||
+    raw === "exemption"
+  ) {
+    return "Exempted";
+  }
+  return VAT_STATUSES.includes(value) ? value : "Non-Vatable";
+};
+
+const MAX_PRODUCT_IMAGES = 8;
+
+const normalizeImageList = (value, fallback) => {
+  const raw = Array.isArray(value) ? value : [];
+  const urls = raw
+    .map((item) => String(item || "").trim())
+    .filter((item) => /^https?:\/\//i.test(item));
+  const cover = String(fallback || "").trim();
+  if (/^https?:\/\//i.test(cover) && !urls.includes(cover)) urls.unshift(cover);
+  return [...new Set(urls)].slice(0, MAX_PRODUCT_IMAGES);
+};
+
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: MAX_PRODUCT_IMAGES },
+  fileFilter: (_req, file, callback) => {
+    if (!String(file.mimetype || "").startsWith("image/")) {
+      callback(new Error("Choose an image file"));
+      return;
+    }
+    callback(null, true);
+  },
+});
+
+router.post(
+  "/images",
+  authenticate,
+  authorize(["owner", "manager"]),
+  (req, res, next) => {
+    imageUpload.array("images", MAX_PRODUCT_IMAGES)(req, res, (error) => {
+      if (error) {
+        return res.status(400).json(errorResponse(error.message || "Could not upload images"));
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const files = req.files || [];
+      if (!files.length) {
+        return res.status(400).json(errorResponse("Choose at least one image"));
+      }
+      const urls = [];
+      for (const file of files) {
+        urls.push(await uploadBuffer(file.buffer));
+      }
+      res.json(successResponse("Images uploaded", { urls }));
+    } catch (error) {
+      console.error("Product image upload error:", error);
+      res.status(500).json(
+        errorResponse(
+          error.message || "Could not upload images. Check the Cloudinary settings."
+        )
+      );
+    }
+  }
+);
 
 // Get all products with pagination and filters
 router.get(
@@ -30,7 +122,7 @@ router.get(
     query("limit").optional().isInt({ min: 1, max: 100 }),
     query("search").optional().trim(),
     query("category").optional().isUUID(),
-    query("status").optional().isIn(["active", "inactive", "discontinued"]),
+    query("status").optional().isIn(["active", "inactive", "discontinued", "all"]),
     query("sortBy")
       .optional()
       .isIn(["name", "createdAt", "sellingPrice", "costPrice"]),
@@ -66,7 +158,9 @@ router.get(
         where.categoryId = category;
       }
 
-      if (status !== "all") {
+      if (status === "all") {
+        where.status = { [db.Sequelize.Op.in]: ["active", "inactive"] };
+      } else if (status) {
         where.status = status;
       }
 
@@ -188,11 +282,14 @@ router.post(
         lowStockThreshold = 10,
         trackInventory = true,
         image,
+        images,
+        kind,
         tags = [],
         attributes = {},
         openingStock = 0,
         isOnline = true,
         isFeatured = false,
+        vatStatus,
       } = req.body;
 
       // Check if SKU already exists
@@ -238,6 +335,10 @@ router.post(
         productSKU = generateSKU(name, category?.name);
       }
 
+      const itemKind = kind === "service" ? "service" : "product";
+      const tracksStock = itemKind === "service" ? false : trackInventory !== false;
+      const imageList = normalizeImageList(images, image);
+
       // Create product
       const product = await db.Product.create(
         {
@@ -252,18 +353,21 @@ router.post(
           sellingPrice,
           minSellingPrice,
           lowStockThreshold,
-          trackInventory,
-          image,
+          trackInventory: tracksStock,
+          kind: itemKind,
+          image: imageList[0] || null,
+          images: imageList,
           tags,
           attributes,
           isOnline,
           isFeatured,
+          vatStatus: normalizeVatStatus(vatStatus),
         },
         { transaction }
       );
 
       // Create inventory record for current branch if tracking inventory
-      if (trackInventory) {
+      if (tracksStock) {
         await db.Inventory.create(
           {
             productId: product.id,
@@ -332,6 +436,7 @@ router.put(
     body("costPrice").optional().isFloat({ min: 0 }),
     body("sellingPrice").optional().isFloat({ min: 0 }),
     body("categoryId").optional().isUUID(),
+    body("unit").optional().trim().isLength({ min: 1, max: 30 }),
     handleValidationErrors,
   ],
   async (req, res) => {
@@ -349,12 +454,15 @@ router.put(
         "minSellingPrice",
         "lowStockThreshold",
         "trackInventory",
+        "kind",
         "image",
+        "images",
         "tags",
         "attributes",
         "status",
         "isOnline",
         "isFeatured",
+        "vatStatus",
       ]);
 
       const product = await db.Product.findOne({
@@ -366,6 +474,20 @@ router.put(
 
       if (!product) {
         return res.status(404).json(errorResponse("Product not found"));
+      }
+
+      if (updates.kind && !["product", "service"].includes(updates.kind)) {
+        delete updates.kind;
+      }
+      if (updates.kind === "service") updates.trackInventory = false;
+      if (updates.kind === "product" && updates.trackInventory === undefined) {
+        updates.trackInventory = true;
+      }
+      if (updates.image === "") updates.image = null;
+      if (updates.images !== undefined || updates.image !== undefined) {
+        const imageList = normalizeImageList(updates.images, updates.image);
+        updates.images = imageList;
+        updates.image = imageList[0] || null;
       }
 
       if (updates.categoryId) {
@@ -409,6 +531,10 @@ router.put(
             .status(400)
             .json(errorResponse("Product with this barcode already exists"));
         }
+      }
+
+      if (updates.vatStatus !== undefined) {
+        updates.vatStatus = normalizeVatStatus(updates.vatStatus);
       }
 
       await product.update(updates);
@@ -710,14 +836,15 @@ const PRODUCT_UNITS = [
 ];
 
 const normalizeUnit = (value) => {
-  const raw = String(value || "piece")
-    .trim()
-    .toLowerCase();
+  const raw = String(value || "piece").trim();
   if (!raw) return "piece";
-  if (raw === "pcs" || raw === "pc" || raw === "pieces") return "piece";
-  if (raw === "ltr" || raw === "l") return "liter";
-  if (PRODUCT_UNITS.includes(raw)) return raw;
-  return "other";
+  const key = raw.toLowerCase();
+  if (key === "pcs" || key === "pc" || key === "pieces") return "piece";
+  if (key === "ltr" || key === "l" || key === "litre" || key === "litres") return "liter";
+  if (key === "kilogram" || key === "kilograms") return "kg";
+  if (key === "gram" || key === "grams") return "g";
+  if (PRODUCT_UNITS.includes(key)) return key;
+  return raw.slice(0, 30);
 };
 
 const resolveCategoryId = async (row, businessId, cache, transaction) => {

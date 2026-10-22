@@ -71,11 +71,19 @@ const calculateTransactionTotals = (items, taxRate = 0) => {
   });
 
   const taxAmount = (subtotal * parseFloat(taxRate)) / 100;
-  const total = subtotal + taxAmount;
+  const lineTax = items.reduce((sum, item) => {
+    if (item.vatRate === undefined) return sum;
+    const itemTotal =
+      parseFloat(item.quantity) * parseFloat(item.unitPrice || item.unitCost);
+    return sum + (itemTotal * parseFloat(item.vatRate || 0)) / 100;
+  }, 0);
+  const usesLineTax = items.some((item) => item.vatRate !== undefined);
+  const tax = usesLineTax ? lineTax : taxAmount;
+  const total = subtotal + tax;
 
   return {
     subtotal,
-    taxAmount,
+    taxAmount: tax,
     total,
     totalProfit,
     itemCount: items.length,

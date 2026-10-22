@@ -73,6 +73,10 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.ENUM('cash', 'card', 'bank', 'credit', 'mobile', 'other'),
       defaultValue: 'cash'
     },
+    bankAccountId: {
+      type: DataTypes.STRING(64),
+      allowNull: true
+    },
     paymentStatus: {
       type: DataTypes.ENUM('paid', 'partial', 'unpaid'),
       defaultValue: 'paid'

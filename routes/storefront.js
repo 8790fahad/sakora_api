@@ -80,6 +80,88 @@ router.put("/settings", authenticate, requirePermission("storefront.manage"), as
   }
 });
 
+router.get("/directory", async (req, res) => {
+  try {
+    const { Op } = db.Sequelize;
+    const businesses = await db.Business.findAll({
+      where: {
+        storefrontEnabled: true,
+        status: "active",
+        storefrontSlug: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] },
+      },
+      attributes: ["storefrontSlug", "name", "city", "updatedAt"],
+      order: [["updatedAt", "DESC"]],
+      limit: 5000,
+    });
+    res.set("Cache-Control", "public, max-age=600");
+    res.json(
+      successResponse("Storefront directory", {
+        shops: businesses.map((business) => ({
+          slug: business.storefrontSlug,
+          name: business.name,
+          city: business.city || "",
+          updatedAt: business.updatedAt,
+        })),
+      })
+    );
+  } catch (error) {
+    res.status(500).json(errorResponse("Failed to list shops", error.message));
+  }
+});
+
+router.get("/:slug/meta", async (req, res) => {
+  try {
+    const business = await loadStore(req.params.slug);
+    if (!business) {
+      return res.status(404).json(errorResponse("Storefront not found"));
+    }
+    const settings = business.storefrontSettings || {};
+    const products = await db.Product.findAll({
+      where: {
+        businessId: business.id,
+        status: "active",
+        isOnline: true,
+      },
+      attributes: ["name", "image", "sellingPrice"],
+      order: [
+        ["isFeatured", "DESC"],
+        ["name", "ASC"],
+      ],
+      limit: 8,
+    });
+    const httpUrl = (value) =>
+      typeof value === "string" && /^https?:\/\//i.test(value) ? value : null;
+    const image =
+      httpUrl(business.logo) ||
+      products.map((product) => httpUrl(product.image)).find(Boolean) ||
+      null;
+    res.set("Cache-Control", "public, max-age=300");
+    res.json(
+      successResponse("Storefront meta", {
+        name: business.name,
+        slug: business.storefrontSlug,
+        description: business.description || "",
+        tagline: settings.tagline || "",
+        city: business.city || "",
+        state: business.state || "",
+        country: business.country || "Nigeria",
+        image,
+        currency: business.currency || "NGN",
+        products: products
+          .filter((product) => product.name)
+          .map((product) => ({
+            name: product.name,
+            price: String(product.sellingPrice ?? ""),
+          })),
+        updatedAt: business.updatedAt,
+      })
+    );
+  } catch (error) {
+    console.error("Storefront meta error:", error);
+    res.status(500).json(errorResponse("Failed to load storefront", error.message));
+  }
+});
+
 router.get("/:slug", async (req, res) => {
   try {
     const business = await loadStore(req.params.slug);
@@ -186,7 +268,8 @@ router.post(
         items,
       } = req.body;
 
-      let subtotal = 0;
+        let subtotal = 0;
+        let taxableSubtotal = 0;
       const lineItems = [];
 
       for (const item of items) {
@@ -227,6 +310,7 @@ router.post(
         const unitPrice = parseFloat(product.sellingPrice);
         const totalPrice = quantity * unitPrice;
         subtotal += totalPrice;
+        if (product.vatStatus === "Vatable") taxableSubtotal += totalPrice;
         lineItems.push({
           product,
           quantity,
@@ -236,7 +320,7 @@ router.post(
       }
 
       const taxRate = business.taxEnabled ? parseFloat(business.taxRate || 0) : 0;
-      const taxAmount = (subtotal * taxRate) / 100;
+      const taxAmount = (taxableSubtotal * taxRate) / 100;
       const shippingAmount = parseFloat(
         business.storefrontSettings?.shippingFee || 0
       );

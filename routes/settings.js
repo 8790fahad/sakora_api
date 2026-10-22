@@ -24,6 +24,26 @@ function asObject(value) {
   }
 }
 
+function splitPhoneValues(value) {
+  return String(value || "")
+    .split(/[\n,;/|]+/)
+    .map((phone) => phone.trim())
+    .filter(Boolean);
+}
+
+function normalizePhones(saved, ...extras) {
+  const list = [];
+  const push = (value) => {
+    splitPhoneValues(value).forEach((phone) => {
+      if (phone && !list.includes(phone) && list.length < 30) list.push(phone);
+    });
+  };
+  if (Array.isArray(saved)) saved.forEach(push);
+  else push(saved);
+  extras.forEach(push);
+  return list;
+}
+
 function normalizeBankAccounts(raw) {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -64,6 +84,8 @@ router.get("/", authenticate, async (req, res) => {
         "phone",
         "email",
         "website",
+        "logo",
+        "registrationNumber",
         "currency",
         "currencySymbol",
         "taxEnabled",
@@ -80,7 +102,7 @@ router.get("/", authenticate, async (req, res) => {
 
     // Get user preferences
     const user = await db.User.findByPk(req.user.id, {
-      attributes: ["id", "firstName", "lastName", "email", "preferences"],
+      attributes: ["id", "firstName", "lastName", "email", "phone", "preferences"],
     });
 
     // Default settings structure
@@ -99,6 +121,7 @@ router.get("/", authenticate, async (req, res) => {
           includeInvoice: true,
           includeWaybill: true,
           footerText: "Thank you for your business!",
+          waybillFooterText: "Thank you for your business!",
           invoice: {
             paperFormat: "a4",
             orientation: "portrait",
@@ -154,8 +177,18 @@ router.get("/", authenticate, async (req, res) => {
         city: business.city || "",
         state: business.state || "",
         country: business.country || "Nigeria",
-        phone: business.phone || "",
-        email: business.email || "",
+        phone: business.phone || user.phone || "",
+        phones: normalizePhones(
+          businessSettings.phones,
+          business.phone,
+          user.phone
+        ),
+        registrationNumber:
+          business.getDataValue("registrationNumber") ||
+          business.registrationNumber ||
+          "",
+        logo: business.logo || "",
+        email: business.email || user.email || "",
         website: business.website || "",
         currency: business.currency || defaultSettings.business.currency,
         currencySymbol:
@@ -204,6 +237,7 @@ router.get("/", authenticate, async (req, res) => {
         firstName: user.firstName,
         lastName: user.lastName,
         email: user.email,
+        phone: user.phone || "",
       },
       notifications: {
         ...defaultSettings.notifications,
@@ -258,8 +292,37 @@ router.put(
     body("state").optional().trim().isLength({ max: 100 }),
     body("country").optional().trim().isLength({ max: 100 }),
     body("phone").optional().trim().isLength({ max: 40 }),
+    body("phones").optional().isArray({ max: 30 }),
+    body("phones.*").optional().trim().isLength({ max: 40 }),
+    body("registrationNumber")
+      .optional({ values: "falsy" })
+      .trim()
+      .isLength({ max: 50 }),
+    body("logo")
+      .optional({ nullable: true, values: "falsy" })
+      .custom((value) => {
+        if (value == null || value === "") return true;
+        if (typeof value !== "string") throw new Error("Logo must be an image");
+        if (/^https?:\/\//i.test(value)) {
+          if (value.length > 2000) throw new Error("Logo link is too long");
+          return true;
+        }
+        if (value.length > 900000) throw new Error("Logo is too large");
+        if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(value)) {
+          throw new Error("Logo must be an image");
+        }
+        return true;
+      }),
     body("email").optional({ values: "falsy" }).isEmail().normalizeEmail(),
-    body("website").optional({ values: "falsy" }).isURL(),
+    body("website")
+      .optional({ values: "falsy" })
+      .customSanitizer((value) => {
+        const site = String(value || "").trim();
+        if (!site || /^https?:\/?\/?$/i.test(site)) return "";
+        return site;
+      })
+      .optional({ values: "falsy" })
+      .isURL(),
     body("currency").optional().isLength({ min: 3, max: 3 }),
     body("currencySymbol").optional().isLength({ min: 1, max: 5 }),
     body("taxEnabled").optional().isBoolean(),
@@ -280,6 +343,9 @@ router.put(
         state,
         country,
         phone,
+        phones,
+        registrationNumber,
+        logo,
         email,
         website,
         currency,
@@ -305,6 +371,14 @@ router.put(
       if (state !== undefined) updateData.state = state;
       if (country !== undefined) updateData.country = country;
       if (phone !== undefined) updateData.phone = phone || null;
+      if (phones !== undefined) {
+        const list = normalizePhones(phones);
+        updateData.phone = list[0] || null;
+      }
+      if (registrationNumber !== undefined) {
+        updateData.registrationNumber = String(registrationNumber || "").trim() || null;
+      }
+      if (logo !== undefined) updateData.logo = logo || null;
       if (email !== undefined) updateData.email = email || null;
       if (website !== undefined) updateData.website = website || null;
       if (currency !== undefined) {
@@ -319,17 +393,28 @@ router.put(
       if (taxName !== undefined) updateData.taxName = taxName;
       if (taxTin !== undefined) updateData.taxTin = taxTin;
 
-      if (additionalSettings) {
+      if (additionalSettings || phones !== undefined) {
+        const {
+          phones: _settingsPhones,
+          logo: _settingsLogo,
+          name: _settingsName,
+          email: _settingsEmail,
+          registrationNumber: _settingsRegistration,
+          ...restSettings
+        } = additionalSettings || {};
         const nextSettings = {
           ...asObject(business.settings),
-          ...additionalSettings,
+          ...restSettings,
         };
-        if (additionalSettings.bankAccounts !== undefined) {
+        if (additionalSettings?.bankAccounts !== undefined) {
           const banks = normalizeBankAccounts(additionalSettings.bankAccounts);
           if (banks.length && !banks.some((b) => b.isDefault)) {
             banks[0].isDefault = true;
           }
           nextSettings.bankAccounts = banks;
+        }
+        if (phones !== undefined) {
+          nextSettings.phones = normalizePhones(phones);
         }
         updateData.settings = nextSettings;
       }
@@ -339,6 +424,11 @@ router.put(
       res.json(successResponse("Business settings updated successfully"));
     } catch (error) {
       console.error("Update business settings error:", error);
+      if (error.name === "SequelizeUniqueConstraintError") {
+        return res
+          .status(409)
+          .json(errorResponse("That business number is already in use"));
+      }
       res
         .status(500)
         .json(

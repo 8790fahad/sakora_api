@@ -75,6 +75,10 @@ router.post('/register', [
       firstName,
       lastName,
       phone,
+      phones,
+      description,
+      registrationNumber,
+      logo,
       businessName,
       businessType,
       marketingOptIn,
@@ -109,6 +113,10 @@ router.post('/register', [
       firstName,
       lastName,
       phone,
+      phones,
+      description,
+      registrationNumber,
+      logo,
       businessName,
       businessType,
       marketingOptIn,
@@ -132,6 +140,17 @@ router.post('/register', [
       await transaction.rollback();
     }
     console.error('Registration error:', error);
+    const duplicate = error.name === 'SequelizeUniqueConstraintError' || error.parent?.code === 'ER_DUP_ENTRY';
+    if (duplicate) {
+      const sql = `${error.parent?.sqlMessage || ''} ${Object.keys(error.fields || {}).join(' ')}`.toLowerCase();
+      if (sql.includes('phone')) {
+        return res.status(409).json(errorResponse('An account already uses this phone number'));
+      }
+      if (sql.includes('email')) {
+        return res.status(409).json(errorResponse('An account already uses this email'));
+      }
+      return res.status(409).json(errorResponse('That business number is already in use'));
+    }
     res.status(500).json(errorResponse('Registration failed', error.message));
   }
 });
@@ -140,6 +159,21 @@ router.post('/register', [
 router.post('/google', [
   body('idToken').notEmpty().withMessage('Google ID token is required'),
   body('businessName').optional().trim().isLength({ min: 2, max: 100 }),
+  body('phones').optional().isArray({ max: 30 }),
+  body('phones.*').optional().trim().isLength({ max: 40 }),
+  body('description').optional({ values: 'falsy' }).trim().isLength({ max: 1000 }),
+  body('registrationNumber').optional({ values: 'falsy' }).trim().isLength({ max: 50 }),
+  body('logo')
+    .optional({ nullable: true, values: 'falsy' })
+    .custom((value) => {
+      if (value == null || value === '') return true;
+      if (typeof value !== 'string') throw new Error('Logo must be an image');
+      if (value.length > 900000) throw new Error('Logo is too large');
+      if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(value) && !/^https?:\/\//i.test(value)) {
+        throw new Error('Logo must be an image');
+      }
+      return true;
+    }),
   body('marketingOptIn').optional(),
   body('referralCode').optional().trim().isLength({ min: 4, max: 16 }),
   handleValidationErrors,
@@ -225,6 +259,10 @@ router.post('/google', [
         email: profile.email,
         firstName,
         lastName,
+        phones: req.body.phones,
+        description: req.body.description,
+        registrationNumber: req.body.registrationNumber,
+        logo: req.body.logo,
         businessName: req.body.businessName || `${firstName}'s Business`,
         marketingOptIn: req.body.marketingOptIn,
         emailVerified: true,
@@ -259,6 +297,9 @@ router.post('/google', [
       await transaction.rollback();
     }
     console.error('Google auth error:', error);
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).json(errorResponse('That business number is already in use'));
+    }
     const message =
       error.message?.includes('configured') ||
       error.message?.includes('email') ||

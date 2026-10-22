@@ -197,6 +197,44 @@ router.get(
         })),
       };
 
+      const paymentSales = await db.Sale.findAll({
+        where: whereClause,
+        attributes: [
+          "id",
+          "saleNumber",
+          "date",
+          "total",
+          "paidAmount",
+          "paymentMethod",
+          "notes",
+          "bankAccountId",
+        ],
+        include: [
+          {
+            model: db.Customer,
+            as: "customer",
+            attributes: ["name"],
+            required: false,
+          },
+        ],
+        order: [
+          ["date", "DESC"],
+          ["createdAt", "DESC"],
+        ],
+        limit: 200,
+      });
+      summary.payments = paymentSales.map((sale) => ({
+        id: sale.id,
+        saleNumber: sale.saleNumber,
+        date: sale.date,
+        total: parseFloat(sale.total) || 0,
+        paidAmount: parseFloat(sale.paidAmount) || 0,
+        paymentMethod: sale.paymentMethod,
+        notes: sale.notes || "",
+        bankAccountId: sale.bankAccountId || null,
+        customerName: sale.customer?.name || "Walk-in",
+      }));
+
       res.json(successResponse("Sales report generated successfully", { report: summary }));
     } catch (error) {
       if (handleTenantError(res, error)) return;
@@ -660,13 +698,41 @@ router.get(
   }
 );
 
+function reportDateRange(period = "month", dateFrom, dateTo) {
+  const now = new Date();
+  if (period === "custom" && dateFrom && dateTo) {
+    return { startDate: new Date(dateFrom), endDate: new Date(dateTo) };
+  }
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (period === "day") return { startDate: startOfToday, endDate: now };
+  if (period === "week") {
+    return { startDate: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000), endDate: now };
+  }
+  if (period === "quarter") {
+    const quarterStart = Math.floor(now.getMonth() / 3) * 3;
+    return { startDate: new Date(now.getFullYear(), quarterStart, 1), endDate: now };
+  }
+  if (period === "year") return { startDate: new Date(now.getFullYear(), 0, 1), endDate: now };
+  return { startDate: new Date(now.getFullYear(), now.getMonth(), 1), endDate: now };
+}
+
+function dateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 // Inventory Valuation Report
 router.get("/inventory", authenticate, async (req, res) => {
   try {
+    const { period = "month", dateFrom, dateTo } = req.query;
     const branchId = await resolveReportBranchId(req);
+    const stockBranchId = branchId || req.user.branchId;
 
     // Inventory has no businessId — scope through Product.businessId
-    const whereClause = branchId ? { branchId } : {};
+    const whereClause = stockBranchId ? { branchId: stockBranchId } : {};
     const productScope = {
       model: db.Product,
       as: "product",
@@ -682,7 +748,7 @@ router.get("/inventory", authenticate, async (req, res) => {
         include: [
           {
             ...productScope,
-            attributes: ["id", "name", "sku", "sellingPrice"],
+            attributes: ["id", "name", "sku", "unit", "sellingPrice"],
             include: [
               {
                 model: db.Category,
@@ -692,7 +758,7 @@ router.get("/inventory", authenticate, async (req, res) => {
             ],
           },
         ],
-        attributes: ["quantity", "averageCostPrice", "reorderPoint", "lastStockUpdate"],
+        attributes: ["quantity", "reservedQuantity", "averageCostPrice", "reorderPoint", "lastStockUpdate"],
       }),
 
       // Low stock items
@@ -763,10 +829,211 @@ router.get("/inventory", authenticate, async (req, res) => {
       totalStockValue[0]?.get?.("totalValue") ||
       0;
 
+    const { startDate, endDate } = reportDateRange(period, dateFrom, dateTo);
+    const movementBranchId = stockBranchId;
+    const movementWhere = {
+      businessId: req.user.businessId,
+      ...(movementBranchId ? { branchId: movementBranchId } : {}),
+      date: { [db.Sequelize.Op.between]: [dateKey(startDate), dateKey(endDate)] },
+    };
+    const [sales, purchases, quotations] = await Promise.all([
+      db.Sale.findAll({
+        where: {
+          ...movementWhere,
+          status: { [db.Sequelize.Op.notIn]: ["cancelled", "refunded"] },
+        },
+        attributes: ["id", "saleNumber", "date", "createdAt"],
+        include: [
+          {
+            model: db.SaleItem,
+            as: "items",
+            attributes: ["id", "quantity", "productId"],
+            include: [{ model: db.Product, as: "product", attributes: ["id", "name", "unit"] }],
+          },
+        ],
+      }),
+      db.Purchase.findAll({
+        where: {
+          ...movementWhere,
+          status: { [db.Sequelize.Op.notIn]: ["cancelled", "draft"] },
+        },
+        attributes: ["id", "purchaseNumber", "date", "createdAt"],
+        include: [
+          {
+            model: db.PurchaseItem,
+            as: "items",
+            attributes: ["id", "quantity", "productId"],
+            include: [{ model: db.Product, as: "product", attributes: ["id", "name", "unit"] }],
+          },
+        ],
+      }),
+      db.Quotation.findAll({
+        where: {
+          ...movementWhere,
+          status: "open",
+          inventoryReduced: true,
+        },
+        attributes: ["id", "quotationNumber", "date", "createdAt"],
+        include: [
+          {
+            model: db.QuotationItem,
+            as: "items",
+            attributes: ["id", "quantity", "productId", "description"],
+            include: [{ model: db.Product, as: "product", attributes: ["id", "name", "unit"], required: false }],
+          },
+        ],
+      }),
+    ]);
+
+    const products = new Map();
+    const ensureProduct = (product, fallbackName) => {
+      const id = product?.id || fallbackName;
+      if (!id) return null;
+      if (!products.has(id)) {
+        products.set(id, {
+          productId: product?.id || null,
+          name: product?.name || fallbackName || "Item",
+          unit: product?.unit || "pcs",
+          stockIn: 0,
+          stockOut: 0,
+          onHand: 0,
+        });
+      }
+      return products.get(id);
+    };
+
+    inventoryItems.forEach((item) => {
+      const row = ensureProduct(item.product);
+      if (!row) return;
+      const available =
+        parseFloat(item.quantity || 0) - parseFloat(item.reservedQuantity || 0);
+      row.onHand += available;
+    });
+
+    const movements = [];
+    const pushMovement = (entry, direction) => {
+      const quantity = parseFloat(entry.quantity || 0);
+      if (!quantity) return;
+      const row = ensureProduct(entry.product, entry.description);
+      if (!row || !entry.product?.id) return;
+      if (direction === "in") row.stockIn += quantity;
+      else row.stockOut += quantity;
+      movements.push({
+        id: entry.id,
+        at: entry.at,
+        date: entry.date,
+        productId: entry.product.id,
+        productName: row.name,
+        unit: row.unit,
+        kind: entry.kind,
+        reference: entry.reference,
+        direction,
+        quantity,
+      });
+    };
+
+    sales.forEach((sale) => {
+      (sale.items || []).forEach((item) => {
+        pushMovement(
+          {
+            id: item.id,
+            quantity: item.quantity,
+            product: item.product,
+            at: sale.createdAt,
+            date: sale.date,
+            kind: "Sale",
+            reference: sale.saleNumber,
+          },
+          "out"
+        );
+      });
+    });
+    purchases.forEach((purchase) => {
+      (purchase.items || []).forEach((item) => {
+        pushMovement(
+          {
+            id: item.id,
+            quantity: item.quantity,
+            product: item.product,
+            at: purchase.createdAt,
+            date: purchase.date,
+            kind: "Purchase",
+            reference: purchase.purchaseNumber,
+          },
+          "in"
+        );
+      });
+    });
+    quotations.forEach((quotation) => {
+      (quotation.items || []).forEach((item) => {
+        pushMovement(
+          {
+            id: item.id,
+            quantity: item.quantity,
+            product: item.product,
+            description: item.description,
+            at: quotation.createdAt,
+            date: quotation.date,
+            kind: "Quotation",
+            reference: quotation.quotationNumber,
+          },
+          "out"
+        );
+      });
+    });
+
+    const historyByProduct = new Map();
+    movements.forEach((movement) => {
+      const list = historyByProduct.get(movement.productId) || [];
+      list.push(movement);
+      historyByProduct.set(movement.productId, list);
+    });
+    historyByProduct.forEach((list, productId) => {
+      list.sort((a, b) => new Date(a.at || a.date) - new Date(b.at || b.date));
+      const product = products.get(productId);
+      let balance =
+        (product?.onHand || 0) - (product?.stockIn || 0) + (product?.stockOut || 0);
+      list.forEach((movement) => {
+        balance += movement.direction === "in" ? movement.quantity : -movement.quantity;
+        movement.balance = Math.round(balance * 1000) / 1000;
+      });
+      if (product) {
+        product.opening = Math.round(
+          ((product.onHand || 0) - (product.stockIn || 0) + (product.stockOut || 0)) * 1000
+        ) / 1000;
+        product.balance = product.onHand;
+        product.history = list;
+      }
+    });
+    products.forEach((product) => {
+      if (product.balance == null) product.balance = product.onHand;
+      if (product.opening == null) product.opening = product.onHand;
+      if (!product.history) product.history = [];
+    });
+
+    const stockIn = movements
+      .filter((row) => row.direction === "in")
+      .reduce((sum, row) => sum + row.quantity, 0);
+    const stockOut = movements
+      .filter((row) => row.direction === "out")
+      .reduce((sum, row) => sum + row.quantity, 0);
+    const onHand = inventoryItems.reduce((sum, item) => {
+      const available =
+        parseFloat(item.quantity || 0) - parseFloat(item.reservedQuantity || 0);
+      return sum + available;
+    }, 0);
+
     const summary = {
       totalItems: inventoryItems.length,
       totalStockValue: parseFloat(totalValue),
       lowStockItems: lowStockItems.length,
+      stockIn,
+      stockOut,
+      onHand,
+      movementProducts: [...products.values()]
+        .filter((row) => row.stockIn || row.stockOut || row.onHand)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+      movements: movements.slice(0, 100),
       inventoryItems: inventoryItems.map((item) => ({
         productId: item.product.id,
         name: item.product.name,

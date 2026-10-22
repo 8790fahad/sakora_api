@@ -30,8 +30,8 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       defaultValue: 'piece',
       validate: {
-        isIn: [['piece', 'kg', 'g', 'liter', 'ml', 'meter', 'cm', 'box', 'pack', 'dozen', 'other']]
-      }
+        len: [1, 30],
+      },
     },
     costPrice: {
       type: DataTypes.DECIMAL(15, 2),
@@ -57,8 +57,18 @@ module.exports = (sequelize, DataTypes) => {
       }
     },
     image: {
-      type: DataTypes.STRING,
+      type: DataTypes.TEXT("long"),
       allowNull: true
+    },
+    images: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      defaultValue: [],
+    },
+    kind: {
+      type: DataTypes.STRING(20),
+      allowNull: false,
+      defaultValue: "product",
     },
     lowStockThreshold: {
       type: DataTypes.INTEGER,
@@ -70,6 +80,11 @@ module.exports = (sequelize, DataTypes) => {
     expiryDate: {
       type: DataTypes.DATEONLY,
       allowNull: true
+    },
+    vatStatus: {
+      type: DataTypes.STRING(20),
+      allowNull: false,
+      defaultValue: "Non-Vatable",
     },
     trackInventory: {
       type: DataTypes.BOOLEAN,

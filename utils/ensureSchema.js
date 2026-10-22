@@ -34,6 +34,32 @@ const ensureSchema = async (sequelize) => {
   );
   await addColumnIfMissing(
     sequelize,
+    "products",
+    "vat_status",
+    "VARCHAR(20) NOT NULL DEFAULT 'Vatable'"
+  );
+  await addColumnIfMissing(
+    sequelize,
+    "products",
+    "kind",
+    "VARCHAR(20) NOT NULL DEFAULT 'product'"
+  );
+  await addColumnIfMissing(sequelize, "products", "images", "JSON NULL");
+  try {
+    const [imageCols] = await sequelize.query(
+      `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'products' AND COLUMN_NAME = 'image'`
+    );
+    const imageType = String(imageCols[0]?.DATA_TYPE || "");
+    if (imageCols.length && !/text/i.test(imageType)) {
+      await sequelize.query(`ALTER TABLE products MODIFY COLUMN image LONGTEXT NULL`);
+      console.log("✅ Widened products.image to LONGTEXT");
+    }
+  } catch (error) {
+    console.warn("products.image column update skipped:", error.message);
+  }
+  await addColumnIfMissing(
+    sequelize,
     "users",
     "permissions",
     "JSON NULL"
@@ -292,6 +318,13 @@ const ensureSchema = async (sequelize) => {
   } catch (error) {
     console.warn("referral_code backfill skipped:", error.message);
   }
+
+  await addColumnIfMissing(
+    sequelize,
+    "sales",
+    "bank_account_id",
+    "VARCHAR(64) NULL"
+  );
 
   try {
     const [rows] = await sequelize.query(

@@ -44,12 +44,27 @@ const createDefaultCategories = async (businessId, transaction) => {
   }
 };
 
+const collectPhones = (phones, primary) => {
+  const list = [];
+  const push = (value) => {
+    const phone = String(value || "").trim();
+    if (phone && !list.includes(phone) && list.length < 30) list.push(phone);
+  };
+  if (Array.isArray(phones)) phones.forEach(push);
+  push(primary);
+  return list;
+};
+
 const provisionOwnerAccount = async ({
   email,
   password,
   firstName,
   lastName,
   phone = null,
+  phones = null,
+  description = null,
+  registrationNumber = null,
+  logo = null,
   businessName,
   businessType = "retail",
   marketingOptIn = false,
@@ -60,16 +75,38 @@ const provisionOwnerAccount = async ({
   transaction,
 }) => {
   const businessNameValue = businessName || `${firstName}'s Business`;
+  const phoneList = collectPhones(phones, phone);
+  const businessNumber = String(registrationNumber || "").trim().slice(0, 50);
   const business = await db.Business.create(
     {
       name: businessNameValue,
       businessType: businessType || "retail",
+      email: email || null,
+      description: String(description || "").trim().slice(0, 1000) || null,
+      registrationNumber: businessNumber || null,
+      phone: phoneList[0] || null,
+      logo: logo || null,
       currency: "NGN",
       currencySymbol: "₦",
       storefrontSlug: await uniqueSlug(db, businessNameValue),
       storefrontEnabled: true,
       referralCode: await generateReferralCode(transaction),
       referredByBusinessId: referredByBusinessId || null,
+    },
+    { transaction }
+  );
+
+  const current =
+    business.settings && typeof business.settings === "object"
+      ? business.settings
+      : {};
+  await business.update(
+    {
+      settings: {
+        ...current,
+        ...(phoneList.length ? { phones: phoneList } : {}),
+        needsProfileDetails: true,
+      },
     },
     { transaction }
   );
