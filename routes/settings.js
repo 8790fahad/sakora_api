@@ -93,6 +93,7 @@ router.get("/", authenticate, async (req, res) => {
         "taxName",
         "taxTin",
         "settings",
+        "createdAt",
       ],
     });
 
@@ -188,6 +189,7 @@ router.get("/", authenticate, async (req, res) => {
           business.registrationNumber ||
           "",
         logo: business.logo || "",
+        createdAt: business.createdAt,
         email: business.email || user.email || "",
         website: business.website || "",
         currency: business.currency || defaultSettings.business.currency,

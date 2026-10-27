@@ -1,6 +1,7 @@
 const express = require("express");
 const db = require("../models");
 const squad = require("../services/squad");
+const { readMerchantSquad } = require("../services/merchantSquad");
 const { fulfillPaidOrder, activateSubscription } = require("../services/orders");
 const { notifySubscription } = require("../services/notify");
 const { errorResponse, successResponse } = require("../utils/helpers");
@@ -55,15 +56,30 @@ router.post("/webhook", async (req, res) => {
       ? req.rawBody.toString("utf8")
       : JSON.stringify(req.body || {});
 
-    if (!squad.verifyWebhookSignature(rawBody, signature)) {
-      return res.status(401).json(errorResponse("Invalid webhook signature"));
-    }
-
     const payload = req.body?.Body || req.body?.body || req.body;
     const transactionRef =
       payload?.transaction_ref ||
       payload?.transactionRef ||
       payload?.data?.transaction_ref;
+    const payment = transactionRef
+      ? await db.Payment.findOne({
+          where: { providerReference: transactionRef },
+          order: [["createdAt", "DESC"]],
+        })
+      : null;
+    let signatureOk = false;
+    if (payment?.referenceType === "order") {
+      const business = await db.Business.findByPk(payment.businessId);
+      const secret = readMerchantSquad(business)?.secretKey || "";
+      signatureOk = Boolean(
+        secret && squad.verifyWebhookSignature(rawBody, signature, secret)
+      );
+    } else {
+      signatureOk = squad.verifyWebhookSignature(rawBody, signature);
+    }
+    if (!signatureOk) {
+      return res.status(401).json(errorResponse("Invalid webhook signature"));
+    }
     const status =
       payload?.transaction_status || payload?.data?.transaction_status;
 

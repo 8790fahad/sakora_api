@@ -10,7 +10,8 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: false,
     },
     plan: {
-      type: DataTypes.ENUM("free", "basic", "premium"),
+      type: DataTypes.STRING(32),
+      allowNull: false,
       defaultValue: "free",
     },
     status: {

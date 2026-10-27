@@ -6,6 +6,8 @@ const { uniqueSlug } = require("../utils/slug");
 const { handleValidationErrors } = require("../utils/validation");
 const { authenticate, requirePermission } = require("../middleware/auth");
 const squad = require("../services/squad");
+const { encryptSecret } = require("../utils/secretBox");
+const { readMerchantSquad, publicSquadStatus } = require("../services/merchantSquad");
 const { notifyOrderPlaced } = require("../services/notify");
 const { fulfillPaidOrder } = require("../services/orders");
 
@@ -40,6 +42,7 @@ router.get("/settings", authenticate, requirePermission("storefront.manage"), as
         enabled: Boolean(business.storefrontEnabled),
         name: business.name,
         settings: business.storefrontSettings || {},
+        squad: publicSquadStatus(business),
         url: `${squad.STOREFRONT_URL}/${business.storefrontSlug}`,
       })
     );
@@ -60,18 +63,44 @@ router.put("/settings", authenticate, requirePermission("storefront.manage"), as
       updates.storefrontSlug = await uniqueSlug(db, req.body.slug, business.id);
     }
     if (req.body.settings) {
+      const shopSettings = { ...req.body.settings };
+      delete shopSettings.secretKey;
+      delete shopSettings.squadSecret;
       updates.storefrontSettings = {
         ...(business.storefrontSettings || {}),
-        ...req.body.settings,
+        ...shopSettings,
       };
     }
+    if (req.body.squad && typeof req.body.squad === "object") {
+      const incoming = req.body.squad;
+      if (typeof incoming.enabled === "boolean") {
+        updates.squadEnabled = incoming.enabled;
+      }
+      if (typeof incoming.publicKey === "string") {
+        updates.squadPublicKey = incoming.publicKey.trim().slice(0, 200);
+      }
+      const secretKey = String(incoming.secretKey || "").trim();
+      if (secretKey) {
+        updates.squadSecretCipher = encryptSecret(secretKey);
+      }
+      const willEnable = updates.squadEnabled === true;
+      const publicKey = updates.squadPublicKey ?? business.squadPublicKey;
+      const hasSecret = Boolean(updates.squadSecretCipher || business.squadSecretCipher);
+      if (willEnable && (!String(publicKey || "").trim() || !hasSecret)) {
+        return res
+          .status(400)
+          .json(errorResponse("Enter your Squad public key and secret key before turning Squad on"));
+      }
+    }
     await business.update(updates);
+    await business.reload();
     res.json(
       successResponse("Storefront updated", {
         slug: business.storefrontSlug,
         enabled: Boolean(business.storefrontEnabled),
         name: business.name,
         settings: business.storefrontSettings || {},
+        squad: publicSquadStatus(business),
         url: `${squad.STOREFRONT_URL}/${business.storefrontSlug}`,
       })
     );
@@ -252,6 +281,13 @@ router.post(
         await t.rollback();
         return res.status(404).json(errorResponse("Storefront not found"));
       }
+      const credentials = readMerchantSquad(business);
+      if (!credentials) {
+        await t.rollback();
+        return res
+          .status(400)
+          .json(errorResponse("This shop has not turned on Squad payments yet"));
+      }
 
       const mainBranch =
         (await db.Branch.findOne({
@@ -406,6 +442,7 @@ router.post(
         customerName,
         transactionRef: paymentReference,
         callbackUrl,
+        credentials,
         metadata: {
           type: "order",
           orderId: order.id,
@@ -457,7 +494,9 @@ router.post(
     } catch (error) {
       if (t && !t.finished) await t.rollback();
       console.error("Checkout error:", error);
-      res.status(500).json(errorResponse("Checkout failed", error.message));
+      res
+        .status(error.status && error.status < 500 ? error.status : 500)
+        .json(errorResponse("Checkout failed", error.message));
     }
   }
 );
@@ -481,7 +520,24 @@ router.get("/:slug/orders/:orderNumber", async (req, res) => {
       return res.status(404).json(errorResponse("Order not found"));
     }
 
-    res.json(successResponse("Order retrieved", { order }));
+    const credentials = readMerchantSquad(business);
+    const paymentRow = await db.Payment.findOne({
+      where: { referenceType: "order", referenceId: order.id },
+      order: [["createdAt", "DESC"]],
+    });
+    const payment =
+      credentials && order.paymentStatus !== "paid"
+        ? {
+            publicKey: credentials.publicKey,
+            reference: paymentRow?.providerReference || order.paymentReference,
+            email: order.customerEmail || business.email || "",
+            amount: order.total,
+            currency: business.currency || "NGN",
+            customerName: order.customerName,
+          }
+        : null;
+
+    res.json(successResponse("Order retrieved", { order, payment }));
   } catch (error) {
     console.error("Public order error:", error);
     res.status(500).json(errorResponse("Failed to load order", error.message));
@@ -607,10 +663,11 @@ router.post("/:slug/orders/:orderNumber/verify", async (req, res) => {
       return res.status(404).json(errorResponse("Payment not found"));
     }
 
+    const credentials = readMerchantSquad(business);
     const mockComplete = Boolean(req.body?.mock) && payment.metadata?.mock;
     const verified = mockComplete
       ? { transaction_status: "Success", mock: true }
-      : await squad.verifyPayment(payment.providerReference);
+      : await squad.verifyPayment(payment.providerReference, credentials);
 
     if (squad.isSuccessful(verified.transaction_status)) {
       const paid = await fulfillPaidOrder(order, payment, verified);

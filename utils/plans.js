@@ -1,52 +1,54 @@
 const PLANS = {
-  free: {
-    key: "free",
+  starter: {
+    key: "starter",
     name: "Starter",
-    price: 0,
-    yearlyPrice: 0,
+    price: 4000,
+    yearlyPrice: 40000,
     period: "month",
-    description: "Start selling from your phone at no cost",
+    description: "A single shop, sales, and stock.",
     features: [
       "1 shop and 1 user",
-      "Up to 50 products",
-      "Record cash and transfer sales",
-      "Basic inventory and low-stock alerts",
-      "Daily sales on your home screen",
+      "Products and low-stock alerts",
+      "Cash and transfer sales",
+      "Customers and quotations",
     ],
   },
-  basic: {
-    key: "basic",
-    name: "Shop",
-    price: 5000,
-    yearlyPrice: 45000,
-    period: "month",
-    popular: true,
-    description: "Online shop, WhatsApp selling, and invoices",
-    features: [
-      "Unlimited products",
-      "Shareable online shop",
-      "WhatsApp product and invoice share",
-      "Order management",
-      "Email and SMS alerts",
-      "Up to 3 staff",
-      "Squad checkout for customers",
-    ],
-  },
-  premium: {
-    key: "premium",
-    name: "Business",
-    price: 15000,
+  growth: {
+    key: "growth",
+    name: "Growth",
+    price: 12000,
     yearlyPrice: 120000,
     period: "month",
-    description: "For teams, branches, and growing stores",
+    popular: true,
+    description: "Online shop, invoices, and a small team.",
     features: [
-      "Everything in Shop",
+      "Everything in Starter",
+      "Public storefront and invoices",
+      "Squad checkout",
+      "WhatsApp sharing",
+      "Up to 3 staff",
+    ],
+  },
+  business: {
+    key: "business",
+    name: "Business",
+    price: 20000,
+    yearlyPrice: 200000,
+    period: "month",
+    description: "Teams, branches, and fuller reports.",
+    features: [
+      "Everything in Growth",
       "Unlimited staff and roles",
       "Multiple branches",
-      "Advanced reports",
+      "Reports and VAT",
       "Priority support",
     ],
   },
+};
+
+const LEGACY_PLANS = {
+  basic: "growth",
+  premium: "business",
 };
 
 const planAmount = (plan, interval = "month") => {
@@ -57,4 +59,32 @@ const planAmount = (plan, interval = "month") => {
 const planPeriodMonths = (interval = "month") =>
   interval === "year" ? 12 : 1;
 
-module.exports = { PLANS, planAmount, planPeriodMonths };
+const PAID_PLANS = new Set([
+  "starter",
+  "growth",
+  "business",
+  "custom",
+  "basic",
+  "premium",
+]);
+
+const planLabel = (key) => {
+  if (!key || key === "free") return "No plan";
+  if (key === "custom") return "Custom";
+  const mapped = LEGACY_PLANS[key] || key;
+  return PLANS[mapped]?.name || "No plan";
+};
+
+const hasActivePlan = (plan, expiry) => {
+  if (!PAID_PLANS.has(String(plan || ""))) return false;
+  const ends = new Date(expiry || 0).getTime();
+  return Number.isFinite(ends) && ends > Date.now();
+};
+
+module.exports = {
+  PLANS,
+  planAmount,
+  planPeriodMonths,
+  planLabel,
+  hasActivePlan,
+};

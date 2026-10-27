@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const { sendEmail } = require("./mail");
 const { codesMatch } = require("./emailVerification");
+const { verificationEmail } = require("./otpEmail");
 
 const CODE_TTL_MINUTES = 15;
 
@@ -18,22 +19,14 @@ const issuePasswordReset = async (user) => {
     passwordResetExpires: expiresAt,
   });
 
-  const subject = "Reset your Sakora password";
-  const text = `Your Sakora password reset code is ${code}. It expires in ${CODE_TTL_MINUTES} minutes.`;
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
-      <h2 style="color: #0f766e; margin-bottom: 8px;">Reset your password</h2>
-      <p style="color: #334155; line-height: 1.5;">
-        Enter this code in Sakora to choose a new password:
-      </p>
-      <p style="font-size: 32px; letter-spacing: 6px; font-weight: 700; color: #0f766e; margin: 24px 0;">
-        ${code}
-      </p>
-      <p style="color: #64748b; font-size: 14px;">
-        This code expires in ${CODE_TTL_MINUTES} minutes. If you did not request a reset, you can ignore this email.
-      </p>
-    </div>
-  `;
+  const firstName = user.firstName || "there";
+  const subject = "Verify your email address";
+  const { text, html } = verificationEmail({
+    firstName,
+    code,
+    intro:
+      "Please use the following verification code to reset your Sakora password:",
+  });
 
   if (process.env.NODE_ENV !== "production") {
     console.log(`[password-reset] code for ${user.email}: ${code}`);

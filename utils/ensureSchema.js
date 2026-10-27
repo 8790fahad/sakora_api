@@ -1,3 +1,14 @@
+const dropIndexIfExists = async (sequelize, table, indexName) => {
+  const [rows] = await sequelize.query(
+    `SELECT INDEX_NAME FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+    { replacements: [table, indexName] }
+  );
+  if (rows.length) {
+    await sequelize.query(`ALTER TABLE \`${table}\` DROP INDEX \`${indexName}\``);
+  }
+};
+
 const addColumnIfMissing = async (sequelize, table, column, definition) => {
   const [rows] = await sequelize.query(
     `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -107,16 +118,13 @@ const ensureSchema = async (sequelize) => {
     "DATETIME NULL"
   );
 
-  try {
-    await sequelize.query(
-      `CREATE UNIQUE INDEX users_google_id_unique ON users (google_id)`
-    );
-  } catch (error) {
-    // Index may already exist or duplicate nulls are fine in MySQL
-    if (!/Duplicate|exists/i.test(error.message || "")) {
-      console.warn("users.google_id unique index skipped:", error.message);
-    }
-  }
+  // Email is the only unique account field. Phone, Google id, and
+  // business registration number may be shared across accounts.
+  await dropIndexIfExists(sequelize, "users", "phone");
+  await dropIndexIfExists(sequelize, "users", "users_phone_unique");
+  await dropIndexIfExists(sequelize, "users", "users_google_id_unique");
+  await dropIndexIfExists(sequelize, "businesses", "registration_number");
+  await dropIndexIfExists(sequelize, "businesses", "businesses_registration_number_unique");
 
   // Existing accounts predate email verification — keep them signed-in capable.
   try {
@@ -152,6 +160,18 @@ const ensureSchema = async (sequelize) => {
     "businesses",
     "selling_mode",
     "VARCHAR(20) NOT NULL DEFAULT 'online'"
+  );
+  await addColumnIfMissing(
+    sequelize,
+    "businesses",
+    "primary_color",
+    "VARCHAR(20) NULL DEFAULT '#0D9488'"
+  );
+  await addColumnIfMissing(
+    sequelize,
+    "businesses",
+    "secondary_color",
+    "VARCHAR(20) NULL DEFAULT '#134E4A'"
   );
   await addColumnIfMissing(
     sequelize,
@@ -325,6 +345,47 @@ const ensureSchema = async (sequelize) => {
     "bank_account_id",
     "VARCHAR(64) NULL"
   );
+  await addColumnIfMissing(
+    sequelize,
+    "businesses",
+    "squad_enabled",
+    "TINYINT(1) NOT NULL DEFAULT 0"
+  );
+  await addColumnIfMissing(
+    sequelize,
+    "businesses",
+    "squad_public_key",
+    "VARCHAR(255) NULL"
+  );
+  await addColumnIfMissing(
+    sequelize,
+    "businesses",
+    "squad_secret_cipher",
+    "TEXT NULL"
+  );
+
+  try {
+    await sequelize.query(
+      "ALTER TABLE businesses MODIFY COLUMN subscription_plan VARCHAR(32) NOT NULL DEFAULT 'free'"
+    );
+    await sequelize.query(
+      "ALTER TABLE subscriptions MODIFY COLUMN plan VARCHAR(32) NOT NULL DEFAULT 'free'"
+    );
+    await sequelize.query(
+      "UPDATE businesses SET subscription_plan = 'growth' WHERE subscription_plan = 'basic'"
+    );
+    await sequelize.query(
+      "UPDATE businesses SET subscription_plan = 'business' WHERE subscription_plan = 'premium'"
+    );
+    await sequelize.query(
+      "UPDATE subscriptions SET plan = 'growth' WHERE plan = 'basic'"
+    );
+    await sequelize.query(
+      "UPDATE subscriptions SET plan = 'business' WHERE plan = 'premium'"
+    );
+  } catch (error) {
+    console.warn("subscription plan column update skipped:", error.message);
+  }
 
   try {
     const [rows] = await sequelize.query(

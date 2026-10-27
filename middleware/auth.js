@@ -8,6 +8,7 @@ const {
   invalidateSession,
 } = require("../utils/sessionCache");
 const { ensureUserBranchBelongsToBusiness } = require("../utils/tenant");
+const { hasActivePlan } = require("../utils/plans");
 
 const JWT_SECRET = getJwtSecret();
 const SESSION_ACTIVITY_TTL_MS = Number(
@@ -109,6 +110,13 @@ const authenticate = async (req, res, next) => {
     };
     req.session = session;
 
+    if (!(await allowWithoutPlan(req))) {
+      return res.status(402).json({
+        success: false,
+        message: "Choose a plan before using Sakora.",
+      });
+    }
+
     next();
   } catch (error) {
     console.error("Authentication error:", error);
@@ -133,6 +141,36 @@ const authenticate = async (req, res, next) => {
     });
   }
 };
+
+const planOptionalPath = (req) => {
+  const path = String(req.originalUrl || "").split("?")[0];
+  return (
+    path.startsWith("/api/auth") ||
+    path.startsWith("/api/subscriptions") ||
+    path.startsWith("/api/support") ||
+    path.startsWith("/api/notifications") ||
+    path.startsWith("/api/settings") ||
+    (req.method === "GET" && path === "/api/storefront/settings")
+  );
+};
+
+async function allowWithoutPlan(req) {
+  if (planOptionalPath(req)) return true;
+  const business = req.user?.business;
+  if (hasActivePlan(business?.subscriptionPlan, business?.subscriptionExpiry)) {
+    return true;
+  }
+  if (!req.user?.businessId) return false;
+  const fresh = await db.Business.findByPk(req.user.businessId, {
+    attributes: ["subscriptionPlan", "subscriptionExpiry"],
+  });
+  if (!fresh) return false;
+  if (business) {
+    business.subscriptionPlan = fresh.subscriptionPlan;
+    business.subscriptionExpiry = fresh.subscriptionExpiry;
+  }
+  return hasActivePlan(fresh.subscriptionPlan, fresh.subscriptionExpiry);
+}
 
 // Check user roles
 const authorize = (roles = []) => {

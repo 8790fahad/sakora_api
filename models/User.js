@@ -17,8 +17,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     phone: {
       type: DataTypes.STRING,
-      allowNull: true,
-      unique: true
+      allowNull: true
     },
     password: {
       type: DataTypes.STRING,
@@ -71,8 +70,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     googleId: {
       type: DataTypes.STRING,
-      allowNull: true,
-      unique: true
+      allowNull: true
     },
     passwordResetCode: {
       type: DataTypes.STRING,

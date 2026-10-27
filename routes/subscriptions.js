@@ -7,7 +7,8 @@ const { activateSubscription } = require("../services/orders");
 const { notifySubscription } = require("../services/notify");
 const { errorResponse, successResponse } = require("../utils/helpers");
 const { isOriginAllowed } = require("../utils/origins");
-const { PLANS, planAmount } = require("../utils/plans");
+const { PLANS, planAmount, planLabel } = require("../utils/plans");
+const { lookupCoupon, priceAfterCoupon } = require("../utils/coupons");
 
 const router = express.Router();
 
@@ -39,8 +40,10 @@ router.get("/plans", authenticate, async (req, res) => {
       plans: Object.values(PLANS),
       current: {
         plan: business.subscriptionPlan,
+        planName: planLabel(business.subscriptionPlan),
         expiry: business.subscriptionExpiry,
         status: latest?.status || "active",
+        amount: latest?.status === "active" ? parseFloat(latest.amount) : null,
       },
       provider: {
         name: "Squad",
@@ -57,12 +60,22 @@ router.post(
   async (req, res) => {
     try {
       const planKey = req.body.plan;
-      const interval = req.body.interval === "year" ? "year" : "month";
+      const interval = "month";
       const plan = PLANS[planKey];
-      const amount = planAmount(plan, interval);
-      if (!plan || amount <= 0) {
+      if (!plan) {
+        return res.status(400).json(errorResponse("Select a plan"));
+      }
+      const listPrice = planAmount(plan);
+      if (listPrice <= 0) {
         return res.status(400).json(errorResponse("Select a paid plan"));
       }
+      const couponCode = String(req.body.coupon || "").trim();
+      const coupon = couponCode ? lookupCoupon(couponCode) : null;
+      if (couponCode && !coupon) {
+        return res.status(400).json(errorResponse("That coupon is not valid"));
+      }
+      const priced = priceAfterCoupon(listPrice, coupon);
+      const amount = priced.amount;
 
       const business = await db.Business.findByPk(req.user.businessId);
       const email = req.user.email || business.email;
@@ -80,8 +93,55 @@ router.post(
         amount,
         currency: "NGN",
         paymentReference: reference,
-        metadata: { interval },
+        metadata: {
+          interval,
+          listPrice,
+          ...(coupon
+            ? { coupon: coupon.code, couponPercent: coupon.percent }
+            : {}),
+        },
       });
+
+      if (amount === 0) {
+        const payment = await db.Payment.create({
+          businessId: business.id,
+          referenceType: "subscription",
+          referenceId: subscription.id,
+          provider: "coupon",
+          providerReference: reference,
+          amount: 0,
+          currency: "NGN",
+          status: "pending",
+          metadata: {
+            plan: plan.key,
+            interval,
+            coupon: coupon.code,
+            couponPercent: coupon.percent,
+            listPrice,
+          },
+        });
+        const activated = await activateSubscription(subscription, payment, {
+          coupon: coupon.code,
+        });
+        await notifySubscription({
+          business: activated.business,
+          user: req.user,
+          plan: subscription.plan,
+          status: "active",
+        });
+        return res.json(
+          successResponse("Coupon applied", {
+            activated: true,
+            plan: activated.business.subscriptionPlan,
+            expiry: activated.business.subscriptionExpiry,
+            payment: {
+              reference,
+              amount: 0,
+              coupon: coupon.code,
+            },
+          })
+        );
+      }
 
       const callbackUrl = billingReturnUrl(req.body.callbackUrl, reference);
       const initiated = await squad.initiatePayment({
@@ -91,7 +151,8 @@ router.post(
         customerName: `${req.user.firstName} ${req.user.lastName}`,
         transactionRef: reference,
         callbackUrl,
-        isRecurring: true,
+        // Squad rejects recurring charges for this merchant. Each payment covers one month.
+        isRecurring: false,
         metadata: {
           type: "subscription",
           plan: plan.key,
@@ -267,7 +328,7 @@ router.post(
       subscriptionPlan: "free",
       subscriptionExpiry: moment().toDate(),
     });
-    res.json(successResponse("Subscription cancelled. You are on the Free plan."));
+    res.json(successResponse("Subscription cancelled. You are on no plan."));
   }
 );
 

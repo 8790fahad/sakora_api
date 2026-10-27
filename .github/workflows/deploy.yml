@@ -31,6 +31,11 @@ jobs:
             git reset --hard origin/main
             git clean -fd -e .env -e tmp -e node_modules -e server.log
             npm ci --omit=dev
+            if ! grep -q '^BILLING_COUPONS=' .env; then
+              printf '\nBILLING_COUPONS=SAKORA100:100\n' >> .env
+            fi
+            # Apply pending migrations against the production database in .env
+            npm run migrate
             PORT=$(awk -F= '/^PORT=/{print $2}' .env | tr -d ' \r' | tail -1)
             PORT=${PORT:-5100}
             if command -v pm2 >/dev/null 2>&1 && pm2 pid sakora-api 2>/dev/null | grep -Eq '^[1-9]'; then

@@ -12,6 +12,7 @@ const {
 } = require("../utils/helpers");
 const { notifyOrderStatus, notifyOrderPlaced } = require("../services/notify");
 const squad = require("../services/squad");
+const { readMerchantSquad } = require("../services/merchantSquad");
 
 const router = express.Router();
 
@@ -79,6 +80,23 @@ router.post(
     const t = await db.sequelize.transaction();
     try {
       const business = await db.Business.findByPk(req.user.businessId);
+      if (!business.storefrontEnabled) {
+        await t.rollback();
+        return res
+          .status(400)
+          .json(errorResponse("Turn on the storefront before creating invoices"));
+      }
+      const credentials = readMerchantSquad(business);
+      if (!credentials) {
+        await t.rollback();
+        return res
+          .status(400)
+          .json(
+            errorResponse(
+              "Turn on Squad and save your public and secret keys on the Storefront page"
+            )
+          );
+      }
       const {
         customerName,
         customerPhone,
@@ -152,9 +170,48 @@ router.post(
         );
       }
 
-      const invoiceUrl = `${squad.STOREFRONT_URL}/${
+      const payerEmail = String(customerEmail || business.email || "").trim();
+      if (!payerEmail) {
+        await t.rollback();
+        return res
+          .status(400)
+          .json(errorResponse("Add an email address so Squad can collect this payment"));
+      }
+      const callbackUrl = `${squad.STOREFRONT_URL}/${
         business.storefrontSlug || "store"
       }/${order.orderNumber}`;
+      const initiated = await squad.initiatePayment({
+        email: payerEmail,
+        amount: total,
+        currency: business.currency || "NGN",
+        customerName,
+        transactionRef: paymentReference,
+        callbackUrl,
+        credentials,
+        metadata: {
+          type: "order",
+          orderId: order.id,
+          orderNumber,
+          businessId: business.id,
+        },
+      });
+      await db.Payment.create(
+        {
+          businessId: business.id,
+          referenceType: "order",
+          referenceId: order.id,
+          provider: "squad",
+          providerReference: initiated.transaction_ref || paymentReference,
+          amount: total,
+          currency: business.currency || "NGN",
+          status: "pending",
+          checkoutUrl: initiated.checkout_url,
+          metadata: { mock: Boolean(initiated.mock) },
+        },
+        { transaction: t }
+      );
+
+      const invoiceUrl = callbackUrl;
 
       await t.commit();
       await notifyOrderPlaced(order, business);
@@ -167,7 +224,9 @@ router.post(
       );
     } catch (error) {
       if (t && !t.finished) await t.rollback();
-      res.status(500).json(errorResponse("Failed to create invoice", error.message));
+      res
+        .status(error.status && error.status < 500 ? error.status : 500)
+        .json(errorResponse("Failed to create invoice", error.message));
     }
   }
 );

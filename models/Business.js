@@ -30,8 +30,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     registrationNumber: {
       type: DataTypes.STRING,
-      allowNull: true,
-      unique: true
+      allowNull: true
     },
     taxNumber: {
       type: DataTypes.STRING,
@@ -118,7 +117,8 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: 'active'
     },
     subscriptionPlan: {
-      type: DataTypes.ENUM('free', 'basic', 'premium'),
+      type: DataTypes.STRING(32),
+      allowNull: false,
       defaultValue: 'free'
     },
     subscriptionExpiry: {
@@ -194,6 +194,18 @@ module.exports = (sequelize, DataTypes) => {
     storefrontEnabled: {
       type: DataTypes.BOOLEAN,
       defaultValue: false
+    },
+    squadEnabled: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
+    squadPublicKey: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    squadSecretCipher: {
+      type: DataTypes.TEXT,
+      allowNull: true
     },
     sellingMode: {
       type: DataTypes.STRING,

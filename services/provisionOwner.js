@@ -89,7 +89,7 @@ const provisionOwnerAccount = async ({
       currency: "NGN",
       currencySymbol: "₦",
       storefrontSlug: await uniqueSlug(db, businessNameValue),
-      storefrontEnabled: true,
+      storefrontEnabled: false,
       referralCode: await generateReferralCode(transaction),
       referredByBusinessId: referredByBusinessId || null,
     },

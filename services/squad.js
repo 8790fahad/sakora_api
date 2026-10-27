@@ -12,11 +12,11 @@ const isConfigured = () => Boolean(SQUAD_SECRET_KEY);
 
 const toKobo = (naira) => Math.round(parseFloat(naira || 0) * 100);
 
-const squadRequest = async (path, { method = "GET", body } = {}) => {
+const squadRequest = async (path, { method = "GET", body, secret } = {}) => {
   const response = await fetch(`${SQUAD_BASE_URL}${path}`, {
     method,
     headers: {
-      Authorization: `Bearer ${SQUAD_SECRET_KEY}`,
+      Authorization: `Bearer ${secret || SQUAD_SECRET_KEY}`,
       "Content-Type": "application/json",
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -43,15 +43,25 @@ const initiatePayment = async ({
   callbackUrl,
   metadata = {},
   isRecurring = false,
+  credentials = null,
 }) => {
-  if (!isConfigured()) {
+  const secret = credentials ? credentials.secretKey : SQUAD_SECRET_KEY;
+  const publicKey = credentials ? credentials.publicKey : SQUAD_PUBLIC_KEY;
+  if (!secret) {
+    if (credentials) {
+      const error = new Error(
+        "Turn on Squad and save your public and secret keys on the Storefront page"
+      );
+      error.status = 400;
+      throw error;
+    }
     return {
       mock: true,
       transaction_ref: transactionRef,
       checkout_url: `${callbackUrl}${
         callbackUrl.includes("?") ? "&" : "?"
       }ref=${encodeURIComponent(transactionRef)}&mock=1`,
-      public_key: SQUAD_PUBLIC_KEY,
+      public_key: publicKey,
     };
   }
 
@@ -71,17 +81,24 @@ const initiatePayment = async ({
   const result = await squadRequest("/transaction/initiate", {
     method: "POST",
     body: payload,
+    secret,
   });
 
   return {
     mock: false,
     ...result.data,
-    public_key: SQUAD_PUBLIC_KEY,
+    public_key: publicKey,
   };
 };
 
-const verifyPayment = async (transactionRef) => {
-  if (!isConfigured()) {
+const verifyPayment = async (transactionRef, credentials = null) => {
+  const secret = credentials ? credentials.secretKey : SQUAD_SECRET_KEY;
+  if (!secret) {
+    if (credentials) {
+      const error = new Error("Squad is not set up for this shop");
+      error.status = 400;
+      throw error;
+    }
     return {
       mock: true,
       transaction_ref: transactionRef,
@@ -91,7 +108,8 @@ const verifyPayment = async (transactionRef) => {
   }
 
   const result = await squadRequest(
-    `/transaction/verify/${encodeURIComponent(transactionRef)}`
+    `/transaction/verify/${encodeURIComponent(transactionRef)}`,
+    { secret }
   );
   return result.data;
 };
@@ -106,15 +124,17 @@ const timingSafeEqualHex = (a, b) => {
   return crypto.timingSafeEqual(left, right);
 };
 
-const verifyWebhookSignature = (rawBody, signature) => {
-  // Fail closed in production when Squad is not configured.
-  if (!SQUAD_SECRET_KEY) {
-    return process.env.NODE_ENV !== "production";
+const verifyWebhookSignature = (rawBody, signature, secretOverride) => {
+  const secret = secretOverride || SQUAD_SECRET_KEY;
+  // Merchant webhooks must always present a valid signature.
+  // Platform billing may skip the check only outside production when unset.
+  if (!secret) {
+    return !secretOverride && process.env.NODE_ENV !== "production";
   }
   if (!signature || !rawBody) return false;
 
   const hash = crypto
-    .createHmac("sha512", SQUAD_SECRET_KEY)
+    .createHmac("sha512", secret)
     .update(rawBody)
     .digest("hex")
     .toUpperCase();
