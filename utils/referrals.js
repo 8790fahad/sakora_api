@@ -74,6 +74,7 @@ const awardReferralCommission = async ({
         plan: subscription.plan,
         interval:
           subscription.metadata?.interval || payment.metadata?.interval || "month",
+        months: subscription.metadata?.months || payment.metadata?.months || null,
         paymentAmount: amountPaid,
       },
     },

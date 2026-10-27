@@ -7,7 +7,7 @@ const { activateSubscription } = require("../services/orders");
 const { notifySubscription } = require("../services/notify");
 const { errorResponse, successResponse } = require("../utils/helpers");
 const { isOriginAllowed } = require("../utils/origins");
-const { PLANS, planAmount, planLabel } = require("../utils/plans");
+const { PLANS, BILLING_TERMS, quoteTerm, planLabel } = require("../utils/plans");
 const { lookupCoupon, priceAfterCoupon } = require("../utils/coupons");
 
 const router = express.Router();
@@ -37,7 +37,15 @@ router.get("/plans", authenticate, async (req, res) => {
 
   res.json(
     successResponse("Subscription plans", {
-      plans: Object.values(PLANS),
+      terms: BILLING_TERMS.map((term) => ({
+        months: term.months,
+        label: term.label,
+        bestValue: Boolean(term.bestValue),
+      })),
+      plans: Object.values(PLANS).map((plan) => ({
+        ...plan,
+        quotes: BILLING_TERMS.map((term) => quoteTerm(plan, term.months)),
+      })),
       current: {
         plan: business.subscriptionPlan,
         planName: planLabel(business.subscriptionPlan),
@@ -53,29 +61,53 @@ router.get("/plans", authenticate, async (req, res) => {
   );
 });
 
+const pricedCheckout = (body) => {
+  const plan = PLANS[body.plan];
+  const quote = plan ? quoteTerm(plan, body.months) : null;
+  if (!plan || !quote) return { error: "Select a plan and a billing period" };
+  const couponCode = String(body.coupon || "").trim();
+  const coupon = couponCode ? lookupCoupon(couponCode) : null;
+  if (couponCode && !coupon) return { error: "That coupon is not valid" };
+  const priced = priceAfterCoupon(quote.amount, coupon);
+  return { plan, quote, coupon, priced };
+};
+
+router.post("/quote", authenticate, (req, res) => {
+  const result = pricedCheckout(req.body);
+  if (result.error) {
+    return res.status(400).json(errorResponse(result.error));
+  }
+  res.json(
+    successResponse("Billing quote", {
+      plan: result.plan.key,
+      months: result.quote.months,
+      label: result.quote.label,
+      listPrice: result.quote.listPrice,
+      save: result.quote.save,
+      percentOff: result.quote.percentOff,
+      perMonth: result.quote.perMonth,
+      amount: result.priced.amount,
+      discount: result.priced.discount || 0,
+      coupon: result.coupon?.code || null,
+      couponPercent: result.coupon?.percent || null,
+    })
+  );
+});
+
 router.post(
   "/checkout",
   authenticate,
   requirePermission("billing.manage"),
   async (req, res) => {
     try {
-      const planKey = req.body.plan;
-      const interval = "month";
-      const plan = PLANS[planKey];
-      if (!plan) {
-        return res.status(400).json(errorResponse("Select a plan"));
+      const result = pricedCheckout(req.body);
+      if (result.error) {
+        return res.status(400).json(errorResponse(result.error));
       }
-      const listPrice = planAmount(plan);
-      if (listPrice <= 0) {
-        return res.status(400).json(errorResponse("Select a paid plan"));
-      }
-      const couponCode = String(req.body.coupon || "").trim();
-      const coupon = couponCode ? lookupCoupon(couponCode) : null;
-      if (couponCode && !coupon) {
-        return res.status(400).json(errorResponse("That coupon is not valid"));
-      }
-      const priced = priceAfterCoupon(listPrice, coupon);
+      const { plan, quote, coupon, priced } = result;
+      const listPrice = quote.listPrice;
       const amount = priced.amount;
+      const interval = quote.months === 12 ? "year" : "month";
 
       const business = await db.Business.findByPk(req.user.businessId);
       const email = req.user.email || business.email;
@@ -95,7 +127,9 @@ router.post(
         paymentReference: reference,
         metadata: {
           interval,
+          months: quote.months,
           listPrice,
+          termAmount: quote.amount,
           ...(coupon
             ? { coupon: coupon.code, couponPercent: coupon.percent }
             : {}),
@@ -115,6 +149,7 @@ router.post(
           metadata: {
             plan: plan.key,
             interval,
+            months: quote.months,
             coupon: coupon.code,
             couponPercent: coupon.percent,
             listPrice,
@@ -151,12 +186,13 @@ router.post(
         customerName: `${req.user.firstName} ${req.user.lastName}`,
         transactionRef: reference,
         callbackUrl,
-        // Squad rejects recurring charges for this merchant. Each payment covers one month.
+        // Squad rejects recurring charges for this merchant. This payment prepays the selected term.
         isRecurring: false,
         metadata: {
           type: "subscription",
           plan: plan.key,
           interval,
+          months: quote.months,
           businessId: business.id,
           subscriptionId: subscription.id,
         },
@@ -172,7 +208,16 @@ router.post(
         currency: "NGN",
         status: "pending",
         checkoutUrl: initiated.checkout_url,
-        metadata: { mock: Boolean(initiated.mock), plan: plan.key, interval },
+        metadata: {
+          mock: Boolean(initiated.mock),
+          plan: plan.key,
+          interval,
+          months: quote.months,
+          listPrice,
+          ...(coupon
+            ? { coupon: coupon.code, couponPercent: coupon.percent }
+            : {}),
+        },
       });
 
       res.json(

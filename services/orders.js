@@ -80,25 +80,49 @@ const fulfillPaidOrder = async (order, payment, extra = {}) => {
   }
 };
 
+const readMeta = (value) => {
+  if (!value) return {};
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch (error) {
+      return {};
+    }
+  }
+  return value;
+};
+
 const activateSubscription = async (subscription, payment, extra = {}) => {
-  const start = moment();
-  const interval =
-    subscription.metadata?.interval || payment.metadata?.interval || "month";
-  const end = moment().add(interval === "year" ? 12 : 1, "month");
+  const meta = readMeta(subscription.metadata);
+  const payMeta = readMeta(payment.metadata);
+  const interval = meta.interval || payMeta.interval || "month";
+  const months = [1, 12, 24, 48].includes(Number(meta.months))
+    ? Number(meta.months)
+    : interval === "year"
+      ? 12
+      : 1;
+
+  const business = await db.Business.findByPk(subscription.businessId);
+  const existingEnd = moment(business.subscriptionExpiry);
+  const samePlan = business.subscriptionPlan === subscription.plan;
+  const start =
+    samePlan && existingEnd.isValid() && existingEnd.isAfter(moment())
+      ? existingEnd.clone()
+      : moment();
+  const end = start.clone().add(months, "month");
   await payment.update({
     status: "success",
     paidAt: payment.paidAt || new Date(),
-    metadata: { ...(payment.metadata || {}), ...extra },
+    metadata: { ...(payment.metadata || {}), ...extra, months },
   });
 
   await subscription.update({
     status: "active",
     paymentReference: payment.providerReference,
-    currentPeriodStart: subscription.currentPeriodStart || start.toDate(),
+    currentPeriodStart: start.toDate(),
     currentPeriodEnd: end.toDate(),
   });
 
-  const business = await db.Business.findByPk(subscription.businessId);
   await business.update({
     subscriptionPlan: subscription.plan,
     subscriptionExpiry: end.toDate(),
