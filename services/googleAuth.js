@@ -1,10 +1,19 @@
 const { OAuth2Client } = require("google-auth-library");
 
+// Public web client used by the app. The secret stays off the server; only the audience is needed.
+const WEB_CLIENT_ID =
+  "175215736246-v9d560u61pgruhqcmns43lfpoal13e89.apps.googleusercontent.com";
+
 const getClientIds = () =>
   [
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_WEB_CLIENT_ID,
-  ].filter(Boolean);
+    ...new Set(
+      [
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_WEB_CLIENT_ID,
+        WEB_CLIENT_ID,
+      ].filter(Boolean)
+    ),
+  ];
 
 const isConfigured = () => getClientIds().length > 0;
 

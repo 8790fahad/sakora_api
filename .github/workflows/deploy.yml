@@ -34,6 +34,9 @@ jobs:
             if ! grep -q '^BILLING_COUPONS=' .env; then
               printf '\nBILLING_COUPONS=SAKORA100:100\n' >> .env
             fi
+            if ! grep -q '^GOOGLE_CLIENT_ID=' .env; then
+              printf '\nGOOGLE_CLIENT_ID=175215736246-v9d560u61pgruhqcmns43lfpoal13e89.apps.googleusercontent.com\n' >> .env
+            fi
             # Apply pending migrations against the production database in .env
             npm run migrate
             PORT=$(awk -F= '/^PORT=/{print $2}' .env | tr -d ' \r' | tail -1)
