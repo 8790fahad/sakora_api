@@ -461,6 +461,15 @@ router.put(
         ...current,
         ...preferences,
       };
+      if (preferences.display) {
+        nextPreferences.display = {
+          ...(current.display || {}),
+          ...preferences.display,
+        };
+        if (!["light", "dark"].includes(nextPreferences.display.theme)) {
+          nextPreferences.display.theme = "light";
+        }
+      }
       if (preferences.pos) {
         nextPreferences.pos = {
           ...(current.pos || {}),

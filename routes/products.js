@@ -437,6 +437,8 @@ router.put(
     body("sellingPrice").optional().isFloat({ min: 0 }),
     body("categoryId").optional().isUUID(),
     body("unit").optional().trim().isLength({ min: 1, max: 30 }),
+    body("openingStock").optional({ nullable: true }).isFloat({ min: 0 }),
+    body("expiryDate").optional({ nullable: true, checkFalsy: true }).isISO8601(),
     handleValidationErrors,
   ],
   async (req, res) => {
@@ -463,6 +465,7 @@ router.put(
         "isOnline",
         "isFeatured",
         "vatStatus",
+        "expiryDate",
       ]);
 
       const product = await db.Product.findOne({
@@ -536,8 +539,37 @@ router.put(
       if (updates.vatStatus !== undefined) {
         updates.vatStatus = normalizeVatStatus(updates.vatStatus);
       }
+      if (updates.expiryDate === "") updates.expiryDate = null;
 
       await product.update(updates);
+
+      const tracksStock =
+        product.kind !== "service" && product.trackInventory !== false;
+      const openingRaw = req.body.openingStock;
+      if (
+        tracksStock &&
+        openingRaw !== undefined &&
+        openingRaw !== null &&
+        openingRaw !== ""
+      ) {
+        const openingStock = parseFloat(openingRaw);
+        const [inventory, created] = await db.Inventory.findOrCreate({
+          where: { productId: product.id, branchId: req.user.branchId },
+          defaults: {
+            quantity: openingStock,
+            reorderPoint: product.lowStockThreshold,
+            averageCostPrice: product.costPrice,
+            lastStockUpdate: new Date(),
+          },
+        });
+        if (!created) {
+          await inventory.update({
+            quantity: openingStock,
+            reorderPoint: product.lowStockThreshold,
+            lastStockUpdate: new Date(),
+          });
+        }
+      }
 
       // Get updated product with relations
       const updatedProduct = await db.Product.findByPk(id, {
