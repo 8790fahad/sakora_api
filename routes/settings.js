@@ -425,7 +425,10 @@ router.put(
 
       res.json(successResponse("Business settings updated successfully"));
     } catch (error) {
-      console.error("Update business settings error:", error);
+      console.error(
+        "Update business settings error:",
+        error?.parent?.sqlMessage || error?.message || error
+      );
       if (error.name === "SequelizeUniqueConstraintError") {
         return res
           .status(409)

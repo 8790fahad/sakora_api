@@ -69,6 +69,19 @@ const ensureSchema = async (sequelize) => {
   } catch (error) {
     console.warn("products.image column update skipped:", error.message);
   }
+  try {
+    const [logoCols] = await sequelize.query(
+      `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'businesses' AND COLUMN_NAME = 'logo'`
+    );
+    const logoType = String(logoCols[0]?.DATA_TYPE || "").toLowerCase();
+    if (logoCols.length && logoType !== "longtext") {
+      await sequelize.query(`ALTER TABLE businesses MODIFY COLUMN logo LONGTEXT NULL`);
+      console.log("✅ Widened businesses.logo to LONGTEXT");
+    }
+  } catch (error) {
+    console.warn("businesses.logo column update skipped:", error.message);
+  }
   await addColumnIfMissing(
     sequelize,
     "users",
